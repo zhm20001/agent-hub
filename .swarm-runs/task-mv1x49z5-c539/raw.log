@@ -1,6 +1,0 @@
-=== Swarm Task task-mv1x49z5-c539 [DEMO-77] ===
-Adapter: zcode | Started: 2026-10-10T04:52:35.586Z
-Command: node /app/applet/tests/fixtures/fake-zcode.cjs -p Demonstrate ZCode live execution on Kanban board --json --cwd /app/applet --mode edit
-Working Dir: /app/applet
-====================================================
-

@@ -1,0 +1,512 @@
+#!/usr/bin/env node
+/**
+ * Batch-dispatch Matt-style ticket files to Agent Hub Face B.
+ * Reads a tickets directory of .md (YAML front matter) / .json files and
+ * POSTs each eligible ticket to /api/tasks/dispatch. No LLM.
+ *
+ * Usage:
+ *   node scripts/dispatch-tickets.mjs <ticketsDir> [--dry-run] [--base-url URL]
+ *     [--passes N] [--cwd PATH] [--adapter NAME]
+ *
+ * Directory defaults (ticket frontmatter wins when set):
+ *   --cwd / AGENT_HUB_DEFAULT_CWD
+ *   --adapter / AGENT_HUB_DEFAULT_ADAPTER
+ *
+ * Eligibility filter (in addition to blockedBy / already-dispatched):
+ *   Type must be task AND status must be ready-for-agent
+ *   (body Type:/Status: lines, or frontmatter type/status/label).
+ */
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { basename, extname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+export const DEFAULT_CWD_ENV = 'AGENT_HUB_DEFAULT_CWD';
+export const DEFAULT_ADAPTER_ENV = 'AGENT_HUB_DEFAULT_ADAPTER';
+export const READY_SIGNAL = 'ready-for-agent';
+
+/**
+ * Minimal YAML front-matter parser (flat keys only; enough for ticket files).
+ * @param {string} text
+ * @returns {{ meta: Record<string, unknown>, body: string } | null}
+ */
+export function parseFrontMatter(text) {
+  if (!text.startsWith('---')) return null;
+  const end = text.indexOf('\n---', 3);
+  if (end === -1) return null;
+  const yaml = text.slice(3, end).replace(/^\r?\n/, '');
+  const body = text.slice(end + 4).replace(/^\r?\n/, '');
+  /** @type {Record<string, unknown>} */
+  const meta = {};
+  for (const line of yaml.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const m = /^([A-Za-z_][\w-]*)\s*:\s*(.*)$/.exec(trimmed);
+    if (!m) continue;
+    const key = m[1];
+    let raw = m[2].trim();
+    if (raw === 'true') meta[key] = true;
+    else if (raw === 'false') meta[key] = false;
+    else if (raw === '[]') meta[key] = [];
+    else if (/^\[.*\]$/.test(raw)) {
+      const inner = raw.slice(1, -1).trim();
+      meta[key] = inner.length === 0
+        ? []
+        : inner.split(',').map((s) => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+    } else if (/^-?\d+$/.test(raw)) meta[key] = Number.parseInt(raw, 10);
+    else meta[key] = raw.replace(/^["']|["']$/g, '');
+  }
+  return { meta, body };
+}
+
+/**
+ * Read a Matt-style field from ticket body: `Type: …` / `**Type:** …`
+ * (first matching line). Value is trimmed raw remainder of the line.
+ * @param {string} text
+ * @param {string} name
+ * @returns {string | undefined}
+ */
+export function parseMattField(text, name) {
+  // Matt uses `**Status:** value` (colon inside bold) or plain `Status: value`.
+  const re = new RegExp(
+    `^(?:\\*\\*${name}:\\*\\*|\\*\\*${name}\\*\\*\\s*:|${name}\\s*:)\\s*(.+)$`,
+    'im',
+  );
+  const m = re.exec(text);
+  return m ? m[1].trim().replace(/^\\*\\*\\s*|\\s*\\*\\*$/g, '') : undefined;
+}
+
+/**
+ * First token of a Type line (stops at whitespace or paren / fullwidth paren).
+ * @param {string | undefined} raw
+ * @returns {string | undefined}
+ */
+export function typeToken(raw) {
+  if (raw === undefined) return undefined;
+  const m = /^([^\s（(]+)/.exec(raw.trim());
+  return m ? m[1] : undefined;
+}
+
+/**
+ * Dispatch accepts only Type: task AND ready-for-agent.
+ *
+ * Signals (first match wins per axis):
+ * - type: frontmatter `type`, else body `Type:` / `**Type:**` (token must be `task`)
+ * - ready: body `Status:` / `**Status:**` contains `ready-for-agent`,
+ *   OR frontmatter `status` / `label` string contains it,
+ *   OR frontmatter `labels` array includes it
+ *
+ * @param {{ type?: string, status?: string, label?: string, labels?: string[], prompt: string, meta?: Record<string, unknown> }} ticket
+ * @returns {{ ok: true } | { ok: false, reason: string }}
+ */
+export function isReadyTask(ticket) {
+  const body = ticket.prompt ?? '';
+  const meta = ticket.meta ?? {};
+
+  const typeRaw =
+    (typeof ticket.type === 'string' ? ticket.type : undefined)
+    ?? (typeof meta.type === 'string' ? meta.type : undefined)
+    ?? parseMattField(body, 'Type');
+  const type = typeToken(typeRaw);
+  if (type !== 'task') {
+    return { ok: false, reason: type ? `not-task:type=${type}` : 'not-task:missing-type' };
+  }
+
+  const statusBody = parseMattField(body, 'Status');
+  const statusFm = typeof meta.status === 'string' ? meta.status
+    : (typeof ticket.status === 'string' ? ticket.status : undefined);
+  const labelFm = typeof meta.label === 'string' ? meta.label
+    : (typeof ticket.label === 'string' ? ticket.label : undefined);
+  const labelsFm = Array.isArray(meta.labels) ? meta.labels.map(String)
+    : (Array.isArray(ticket.labels) ? ticket.labels.map(String) : []);
+
+  const ready =
+    (statusBody !== undefined && statusBody.includes(READY_SIGNAL))
+    || (statusFm !== undefined && statusFm.includes(READY_SIGNAL))
+    || (labelFm !== undefined && labelFm.includes(READY_SIGNAL))
+    || labelsFm.some((l) => l.includes(READY_SIGNAL));
+
+  if (!ready) {
+    return { ok: false, reason: 'not-ready-for-agent' };
+  }
+  return { ok: true };
+}
+
+/**
+ * Apply directory-level cwd/adapter defaults when ticket omitted them.
+ * Precedence: ticket field > CLI/env default > leave unset.
+ * @param {Ticket} ticket
+ * @param {{ cwd?: string, adapter?: string }} defaults
+ */
+export function applyDefaults(ticket, defaults) {
+  if (!ticket.cwd && defaults.cwd) ticket.cwd = defaults.cwd;
+  if (!ticket.adapter && defaults.adapter) ticket.adapter = defaults.adapter;
+  return ticket;
+}
+
+/** @typedef {{
+ *   ticket?: string,
+ *   label?: string,
+ *   prompt: string,
+ *   adapter?: string,
+ *   mode?: string,
+ *   cwd?: string,
+ *   timeout?: number,
+ *   blockedBy?: string[],
+ *   parallel?: boolean,
+ *   type?: string,
+ *   status?: string,
+ *   labels?: string[],
+ *   meta?: Record<string, unknown>,
+ *   source: string,
+ * }} Ticket */
+
+/**
+ * @param {string} filePath
+ * @returns {Ticket | null}
+ */
+export function loadTicket(filePath) {
+  const ext = extname(filePath).toLowerCase();
+  const raw = readFileSync(filePath, 'utf8');
+  const source = basename(filePath);
+
+  if (ext === '.json') {
+    const obj = JSON.parse(raw);
+    if (typeof obj.prompt !== 'string' || obj.prompt.trim() === '') {
+      console.warn(`[skip] ${source}: prompt required`);
+      return null;
+    }
+    return {
+      ticket: typeof obj.ticket === 'string' ? obj.ticket : undefined,
+      label: typeof obj.label === 'string' ? obj.label : undefined,
+      prompt: obj.prompt,
+      adapter: typeof obj.adapter === 'string' ? obj.adapter : undefined,
+      mode: typeof obj.mode === 'string' ? obj.mode : undefined,
+      cwd: typeof obj.cwd === 'string' ? obj.cwd : undefined,
+      timeout: typeof obj.timeout === 'number' ? obj.timeout : undefined,
+      blockedBy: Array.isArray(obj.blockedBy) ? obj.blockedBy.map(String) : [],
+      parallel: obj.parallel !== false,
+      type: typeof obj.type === 'string' ? obj.type : undefined,
+      status: typeof obj.status === 'string' ? obj.status : undefined,
+      labels: Array.isArray(obj.labels) ? obj.labels.map(String) : undefined,
+      meta: obj,
+      source,
+    };
+  }
+
+  if (ext === '.md') {
+    const parsed = parseFrontMatter(raw);
+    if (parsed === null) {
+      const prompt = raw.trim();
+      if (!prompt) return null;
+      return {
+        ticket: basename(filePath, ext),
+        prompt,
+        blockedBy: [],
+        parallel: true,
+        source,
+      };
+    }
+    const prompt = typeof parsed.meta.prompt === 'string' && parsed.meta.prompt.trim() !== ''
+      ? String(parsed.meta.prompt)
+      : parsed.body.trim();
+    if (!prompt) {
+      console.warn(`[skip] ${source}: empty prompt/body`);
+      return null;
+    }
+    return {
+      ticket: typeof parsed.meta.ticket === 'string' ? parsed.meta.ticket : basename(filePath, ext),
+      label: typeof parsed.meta.label === 'string' ? parsed.meta.label : undefined,
+      prompt,
+      adapter: typeof parsed.meta.adapter === 'string' ? parsed.meta.adapter : undefined,
+      mode: typeof parsed.meta.mode === 'string' ? parsed.meta.mode : undefined,
+      cwd: typeof parsed.meta.cwd === 'string' ? parsed.meta.cwd : undefined,
+      timeout: typeof parsed.meta.timeout === 'number' ? parsed.meta.timeout : undefined,
+      blockedBy: Array.isArray(parsed.meta.blockedBy) ? parsed.meta.blockedBy.map(String) : [],
+      parallel: parsed.meta.parallel !== false,
+      type: typeof parsed.meta.type === 'string' ? parsed.meta.type : undefined,
+      status: typeof parsed.meta.status === 'string' ? parsed.meta.status : undefined,
+      labels: Array.isArray(parsed.meta.labels) ? parsed.meta.labels.map(String) : undefined,
+      meta: parsed.meta,
+      source,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Ticket ids that already have a COMPLETED task in .swarm-runs (mechanical).
+ * Also track any ticket that already has a task at all (avoid re-dispatch).
+ * @returns {{ completed: Set<string>, dispatched: Set<string> }}
+ */
+export function readSwarmTicketState(cwd = process.cwd()) {
+  const runsDir = resolve(cwd, '.swarm-runs');
+  const completed = new Set();
+  const dispatched = new Set();
+  if (!existsSync(runsDir)) return { completed, dispatched };
+  for (const entry of readdirSync(runsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const metaPath = join(runsDir, entry.name, 'meta.json');
+    if (!existsSync(metaPath)) continue;
+    try {
+      const meta = JSON.parse(readFileSync(metaPath, 'utf8'));
+      if (typeof meta.ticket === 'string' && meta.ticket.length > 0) {
+        dispatched.add(meta.ticket);
+        if (meta.status === 'COMPLETED') completed.add(meta.ticket);
+      }
+    } catch {
+      // skip
+    }
+  }
+  return { completed, dispatched };
+}
+
+/**
+ * @param {Ticket} ticket
+ * @param {Set<string>} completed
+ * @param {Set<string>} dispatched
+ */
+export function isEligible(ticket, completed, dispatched) {
+  const id = ticket.ticket;
+  if (id && dispatched.has(id)) return { ok: false, reason: 'already-dispatched' };
+  const blockers = ticket.blockedBy ?? [];
+  const unmet = blockers.filter((b) => !completed.has(b));
+  if (unmet.length > 0) return { ok: false, reason: `blocked-by:${unmet.join(',')}` };
+  return { ok: true, reason: 'eligible' };
+}
+
+/** @param {Ticket} ticket */
+export function toPayload(ticket) {
+  /** @type {Record<string, unknown>} */
+  const body = { prompt: ticket.prompt };
+  if (ticket.ticket) body.ticket = ticket.ticket;
+  if (ticket.label) body.label = ticket.label;
+  if (ticket.adapter) body.adapter = ticket.adapter;
+  if (ticket.mode) body.mode = ticket.mode;
+  if (ticket.cwd) body.cwd = ticket.cwd;
+  if (ticket.timeout !== undefined) body.timeout = ticket.timeout;
+  return body;
+}
+
+/**
+ * @param {string[]} argv  process.argv.slice(2)
+ * @param {NodeJS.ProcessEnv} [env]
+ */
+export function parseArgs(argv, env = process.env) {
+  if (argv.length === 0 || argv[0] === '-h' || argv[0] === '--help') {
+    return { help: true, exitCode: argv.length === 0 ? 1 : 0 };
+  }
+
+  const ticketsDir = resolve(argv[0]);
+  let dryRun = false;
+  let baseUrl = 'http://127.0.0.1:3000';
+  let passes = 1;
+  /** @type {string | undefined} */
+  let defaultCwd = env[DEFAULT_CWD_ENV] || undefined;
+  /** @type {string | undefined} */
+  let defaultAdapter = env[DEFAULT_ADAPTER_ENV] || undefined;
+
+  for (let i = 1; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (a === '--dry-run') dryRun = true;
+    else if (a === '--base-url') {
+      baseUrl = argv[++i];
+      if (!baseUrl) return { error: '--base-url requires a value' };
+    } else if (a === '--passes') {
+      passes = Number.parseInt(argv[++i] ?? '', 10);
+      if (!Number.isSafeInteger(passes) || passes < 1) {
+        return { error: '--passes must be a positive integer' };
+      }
+    } else if (a === '--cwd') {
+      defaultCwd = argv[++i];
+      if (!defaultCwd) return { error: '--cwd requires a value' };
+    } else if (a === '--adapter') {
+      defaultAdapter = argv[++i];
+      if (!defaultAdapter) return { error: '--adapter requires a value' };
+    } else {
+      return { error: `Unknown arg: ${a}` };
+    }
+  }
+
+  return {
+    ticketsDir,
+    dryRun,
+    baseUrl,
+    passes,
+    defaultCwd,
+    defaultAdapter,
+  };
+}
+
+export function usageText() {
+  return `Usage: node scripts/dispatch-tickets.mjs <ticketsDir> [--dry-run] [--base-url URL] [--passes N] [--cwd PATH] [--adapter NAME]
+
+Defaults (ticket frontmatter wins):
+  --cwd PATH       or ${DEFAULT_CWD_ENV}
+  --adapter NAME   or ${DEFAULT_ADAPTER_ENV}
+
+Filter: only Type: task AND Status/ready containing "${READY_SIGNAL}"
+  (body Type:/Status: lines, or frontmatter type / status / label / labels).`;
+}
+
+/**
+ * @param {ReturnType<typeof parseArgs> & { ticketsDir: string }} opts
+ */
+export async function runDispatch(opts) {
+  const {
+    ticketsDir,
+    dryRun = false,
+    baseUrl = 'http://127.0.0.1:3000',
+    passes = 1,
+    defaultCwd,
+    defaultAdapter,
+  } = opts;
+
+  if (!existsSync(ticketsDir)) {
+    console.error(`Tickets dir not found: ${ticketsDir}`);
+    return 1;
+  }
+
+  const defaults = { cwd: defaultCwd, adapter: defaultAdapter };
+
+  const files = readdirSync(ticketsDir)
+    .filter((n) => ['.md', '.json'].includes(extname(n).toLowerCase()))
+    .map((n) => join(ticketsDir, n))
+    .sort();
+
+  /** @type {Ticket[]} */
+  const tickets = [];
+  for (const f of files) {
+    const t = loadTicket(f);
+    if (t) {
+      applyDefaults(t, defaults);
+      tickets.push(t);
+    }
+  }
+
+  if (tickets.length === 0) {
+    console.error(`No ticket files found in ${ticketsDir}`);
+    return 1;
+  }
+
+  console.log(
+    `[dispatch-tickets] dir=${ticketsDir} tickets=${tickets.length} dryRun=${dryRun}`
+    + ` baseUrl=${baseUrl} passes=${passes}`
+    + ` defaultCwd=${defaultCwd ?? '(none)'} defaultAdapter=${defaultAdapter ?? '(none)'}`,
+  );
+
+  let posted = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  async function postDispatch(payload) {
+    const res = await fetch(`${baseUrl.replace(/\/$/, '')}/api/tasks/dispatch`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const text = await res.text();
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = { raw: text };
+    }
+    return { status: res.status, json };
+  }
+
+  for (let pass = 1; pass <= passes; pass += 1) {
+    const { completed, dispatched } = readSwarmTicketState();
+    const localDispatched = new Set(dispatched);
+
+    /** @type {Ticket[]} */
+    const eligible = [];
+    for (const ticket of tickets) {
+      const id = ticket.ticket;
+      const ready = isReadyTask(ticket);
+      if (!ready.ok) {
+        skipped += 1;
+        console.log(`[skip] ${ticket.source}${id ? ` (${id})` : ''}: ${ready.reason}`);
+        continue;
+      }
+      if (id && localDispatched.has(id)) {
+        skipped += 1;
+        console.log(`[skip] ${ticket.source} (${id}): already-dispatched`);
+        continue;
+      }
+      const gate = isEligible(ticket, completed, localDispatched);
+      if (!gate.ok) {
+        skipped += 1;
+        console.log(`[skip] ${ticket.source}${id ? ` (${id})` : ''}: ${gate.reason}`);
+        continue;
+      }
+      eligible.push(ticket);
+    }
+
+    const serial = eligible.filter((t) => t.parallel === false);
+    const parallel = eligible.filter((t) => t.parallel !== false);
+    /** @type {Ticket[]} */
+    let batch;
+    if (serial.length > 0 && pass === 1) {
+      batch = [serial[0], ...parallel];
+    } else if (serial.length > 0) {
+      batch = [serial[0]];
+    } else {
+      batch = parallel;
+    }
+
+    if (batch.length === 0) {
+      console.log(`[pass ${pass}] nothing eligible`);
+      continue;
+    }
+
+    for (const ticket of batch) {
+      const payload = toPayload(ticket);
+      if (dryRun) {
+        console.log(`[dry-run] would POST ${ticket.source}:`, JSON.stringify(payload));
+        posted += 1;
+        if (ticket.ticket) localDispatched.add(ticket.ticket);
+        if (ticket.parallel === false) break;
+        continue;
+      }
+      try {
+        const { status, json } = await postDispatch(payload);
+        if (status === 201) {
+          console.log(`[ok] ${ticket.source} → taskId=${json.taskId} status=${json.status}`);
+          posted += 1;
+          if (ticket.ticket) localDispatched.add(ticket.ticket);
+        } else {
+          console.error(`[fail] ${ticket.source} HTTP ${status}:`, json);
+          failed += 1;
+        }
+      } catch (err) {
+        console.error(`[fail] ${ticket.source}:`, err instanceof Error ? err.message : err);
+        failed += 1;
+      }
+      if (ticket.parallel === false) break;
+    }
+  }
+
+  console.log(`[done] posted=${posted} skipped=${skipped} failed=${failed}`);
+  return failed > 0 ? 1 : 0;
+}
+
+async function main() {
+  const parsed = parseArgs(process.argv.slice(2));
+  if ('help' in parsed && parsed.help) {
+    console.log(usageText());
+    process.exit(parsed.exitCode ?? 0);
+  }
+  if ('error' in parsed && parsed.error) {
+    console.error(parsed.error);
+    process.exit(1);
+  }
+  const code = await runDispatch(/** @type {any} */ (parsed));
+  process.exit(code);
+}
+
+const entry = process.argv[1] && resolve(process.argv[1]);
+const isDirect = Boolean(entry) && import.meta.url === pathToFileURL(entry).href;
+if (isDirect) {
+  main();
+}

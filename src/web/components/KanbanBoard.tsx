@@ -1,36 +1,32 @@
-import React, { useEffect, useState } from 'react';
-import {
-  Activity,
-  CheckCircle2,
-  AlertTriangle,
-  Clock,
-  Terminal,
-  Cpu,
-  ChevronRight,
-  Ban,
-  ArrowUpRight,
-  ShieldCheck,
-  FileCode2,
-} from 'lucide-react';
-import type { Task, TaskStatus } from '../types.ts';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Clock } from 'lucide-react';
+import type { Task } from '../types.ts';
 import { translations, type Language } from '../i18n.ts';
+import { formatDuration, formatShanghaiAbsolute } from '../lib/board-ux.ts';
+import { statusInkClass, statusShortLabel } from '../lib/status-ink.ts';
 
 interface KanbanBoardProps {
   tasks: Task[];
   selectedTaskId: string | null;
-  onSelectTask: (taskId: string) => void;
+  /** Arrow-key / roving highlight — stays on Kanban. */
+  onHighlightTask: (taskId: string) => void;
+  /** Click / Enter — open Master–Detail. */
+  onOpenTask: (taskId: string) => void;
   lang: Language;
 }
+
+type LaneId = 'running' | 'completed' | 'terminated';
 
 export const KanbanBoard: React.FC<KanbanBoardProps> = ({
   tasks,
   selectedTaskId,
-  onSelectTask,
+  onHighlightTask,
+  onOpenTask,
   lang,
 }) => {
   const t = translations[lang];
+  const boardRef = useRef<HTMLDivElement>(null);
 
-  // Tick for live duration display on running tasks
   const [, setTick] = useState(0);
   useEffect(() => {
     const timer = setInterval(() => setTick((v) => v + 1), 1000);
@@ -40,190 +36,256 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
   const runningTasks = tasks.filter((task) => task.status === 'RUNNING');
   const completedTasks = tasks.filter((task) => task.status === 'COMPLETED');
   const terminatedTasks = tasks.filter(
-    (task) => task.status === 'FAILED' || task.status === 'KILLED' || task.status === 'TIMEOUT_KILLED'
+    (task) =>
+      task.status === 'FAILED' ||
+      task.status === 'KILLED' ||
+      task.status === 'TIMEOUT_KILLED',
   );
 
-  const formatDuration = (startTime: number, endTime?: number) => {
-    const end = endTime || Date.now();
-    const diffSec = Math.max(0, Math.round((end - startTime) / 1000));
-    if (diffSec < 60) return `${diffSec}s`;
-    const min = Math.floor(diffSec / 60);
-    const sec = diffSec % 60;
-    return `${min}m ${sec}s`;
+  const emptyHint = (lane: LaneId) => {
+    if (tasks.length === 0) return t.emptyBoardHint;
+    if (lane === 'running') return t.emptyRunningHint;
+    if (lane === 'completed') return t.emptyCompletedHint;
+    return t.emptyTerminatedHint;
   };
+
+  const moveSelection = useCallback(
+    (dir: 'up' | 'down' | 'left' | 'right') => {
+      const order: LaneId[] = ['running', 'completed', 'terminated'];
+      const map: Record<LaneId, Task[]> = {
+        running: runningTasks,
+        completed: completedTasks,
+        terminated: terminatedTasks,
+      };
+      if (tasks.length === 0) return;
+
+      let laneIdx = 0;
+      let cardIdx = 0;
+      let found = false;
+      for (let li = 0; li < order.length; li++) {
+        const list = map[order[li]];
+        const ci = list.findIndex((x) => x.taskId === selectedTaskId);
+        if (ci >= 0) {
+          laneIdx = li;
+          cardIdx = ci;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        const firstLane = order.find((id) => map[id].length > 0);
+        if (!firstLane) return;
+        onHighlightTask(map[firstLane][0].taskId);
+        return;
+      }
+
+      if (dir === 'up') {
+        const list = map[order[laneIdx]];
+        const next = list[Math.max(0, cardIdx - 1)];
+        if (next) onHighlightTask(next.taskId);
+        return;
+      }
+      if (dir === 'down') {
+        const list = map[order[laneIdx]];
+        const next = list[Math.min(list.length - 1, cardIdx + 1)];
+        if (next) onHighlightTask(next.taskId);
+        return;
+      }
+      if (dir === 'left' || dir === 'right') {
+        const step = dir === 'left' ? -1 : 1;
+        for (let offset = 1; offset < order.length; offset++) {
+          const ni = (laneIdx + step * offset + order.length * 4) % order.length;
+          const list = map[order[ni]];
+          if (list.length === 0) continue;
+          const niCard = Math.min(cardIdx, list.length - 1);
+          onHighlightTask(list[niCard].taskId);
+          return;
+        }
+      }
+    },
+    [tasks, selectedTaskId, onHighlightTask, runningTasks, completedTasks, terminatedTasks],
+  );
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || target?.isContentEditable) {
+        return;
+      }
+      // Only when focus is within the board (or nowhere interactive)
+      const active = document.activeElement as HTMLElement | null;
+      const inBoard = boardRef.current?.contains(active);
+      const bodyFocus = active === document.body || active === document.documentElement;
+      if (!inBoard && !bodyFocus) return;
+
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        moveSelection('up');
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        moveSelection('down');
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        moveSelection('left');
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        moveSelection('right');
+      } else if (e.key === 'Enter' && selectedTaskId) {
+        e.preventDefault();
+        onOpenTask(selectedTaskId);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [moveSelection, selectedTaskId, onOpenTask]);
 
   const renderCard = (task: Task) => {
     const isSelected = task.taskId === selectedTaskId;
     const isRunning = task.status === 'RUNNING';
+    const ink = statusInkClass(task.status);
 
     return (
       <div
         key={task.taskId}
-        onClick={() => onSelectTask(task.taskId)}
-        className={`group relative rounded-xl p-4 transition-all duration-200 cursor-pointer border text-left ${
+        role="option"
+        aria-selected={isSelected}
+        tabIndex={isSelected ? 0 : -1}
+        onClick={() => onOpenTask(task.taskId)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onOpenTask(task.taskId);
+          }
+        }}
+        className={`group relative rounded-md px-3 py-2.5 transition-colors duration-150 cursor-pointer border text-left outline-none ${
           isRunning
-            ? 'bg-gradient-to-br from-zinc-900 to-indigo-950/40 border-indigo-500/50 shadow-lg shadow-indigo-500/10 hover:border-indigo-400 hover:scale-[1.01]'
-            : task.status === 'COMPLETED'
-            ? 'bg-zinc-900/90 border-zinc-800 hover:border-zinc-700 hover:bg-zinc-850 hover:scale-[1.01]'
-            : 'bg-zinc-900/70 border-zinc-800 hover:border-rose-900/50 hover:bg-zinc-850'
-        } ${isSelected ? 'ring-2 ring-indigo-500 border-indigo-500' : ''}`}
+            ? 'bg-surface border-live/30 hover:border-live/50'
+            : 'bg-surface/90 border-line hover:border-line-strong hover:bg-surface-raised'
+        } ${isSelected ? 'ring-1 ring-accent border-accent bg-accent/5' : ''}`}
       >
-        {/* Running Active Glow Banner */}
         {isRunning && (
-          <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-indigo-500 via-sky-400 to-emerald-400 rounded-t-xl animate-pulse" />
+          <div className="absolute top-0 left-0 right-0 h-0.5 bg-live rounded-t-md" />
         )}
 
-        <div className="flex items-center justify-between gap-2 mb-2">
-          <div className="flex items-center gap-1.5 flex-wrap">
+        <div className="flex items-start justify-between gap-2 mb-1">
+          <div className="min-w-0 flex items-baseline gap-1.5">
             {task.ticket ? (
-              <span className="px-2 py-0.5 rounded-md bg-indigo-500/20 text-indigo-300 font-mono text-[11px] font-bold border border-indigo-500/30">
+              <span className="shrink-0 font-mono text-[10px] font-semibold text-accent-soft">
                 {task.ticket}
               </span>
-            ) : (
-              <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono text-[10px]">
-                NO-TICKET
-              </span>
-            )}
-            <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 text-[10px] font-mono border border-zinc-700/60">
-              {task.adapter}
-            </span>
+            ) : null}
+            <h4 className="font-semibold text-xs text-ink line-clamp-1">
+              {task.label || task.taskId}
+            </h4>
           </div>
-
-          <div className="flex items-center gap-1">
-            {isRunning ? (
-              <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-ping" />
-                {t.runningBadge}
-              </span>
-            ) : task.status === 'COMPLETED' ? (
-              <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20">
-                <ShieldCheck className="h-3 w-3" />
-                exit 0
-              </span>
-            ) : (
-              <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-rose-500/10 text-rose-400 border border-rose-500/20">
-                <AlertTriangle className="h-3 w-3" />
-                {task.status}
-              </span>
-            )}
-          </div>
+          <span
+            className={`shrink-0 text-[10px] font-semibold uppercase tracking-wide ${ink}`}
+          >
+            {statusShortLabel(task.status, lang)}
+          </span>
         </div>
 
-        {/* Task Title & Prompt */}
-        <h4 className="font-semibold text-xs text-zinc-200 line-clamp-1 mb-1 group-hover:text-white transition-colors">
-          {task.label || task.taskId}
-        </h4>
-        <p className="text-[11px] text-zinc-400 font-mono line-clamp-2 leading-relaxed mb-3">
+        <p className="text-[11px] text-ink-secondary font-mono line-clamp-2 leading-snug mb-2">
           {task.prompt}
         </p>
 
-        {/* Card Footer: Metadata and Inspector Action */}
-        <div className="flex items-center justify-between text-[11px] text-zinc-500 pt-2 border-t border-zinc-800/80">
-          <div className="flex items-center gap-2 font-mono text-[10px]">
-            <span className="flex items-center gap-1 text-zinc-400">
-              <Clock className="h-3 w-3" />
-              <span>{formatDuration(task.startTime, task.endTime)}</span>
-            </span>
-            {task.pid && <span className="text-zinc-500">PID: {task.pid}</span>}
-          </div>
-
-          <div className="flex items-center gap-1 text-indigo-400 group-hover:translate-x-0.5 transition-transform text-[11px] font-medium">
-            <span>{t.clickToInspect}</span>
-            <ChevronRight className="h-3.5 w-3.5" />
-          </div>
+        <div className="flex items-center gap-1.5 text-[10px] text-ink-muted font-mono min-w-0">
+          <Clock className="h-3 w-3 shrink-0" aria-hidden />
+          <span className="truncate" title={t.startedAt}>
+            {formatShanghaiAbsolute(task.startTime)}
+          </span>
+          <span className="text-ink-faint">·</span>
+          <span>{formatDuration(task.startTime, task.endTime)}</span>
+          <span className="text-ink-faint">·</span>
+          <span className="truncate">{task.adapter}</span>
         </div>
       </div>
     );
   };
 
+  const renderLane = (
+    title: string,
+    count: number,
+    bayClass: string,
+    laneTasks: Task[],
+    lane: LaneId,
+    countTone: string,
+  ) => (
+    <div
+      className="flex flex-col bg-surface/40 rounded-md border border-line overflow-hidden"
+      role="group"
+      aria-label={title}
+    >
+      <div className="border-b border-line/80 bg-surface/60">
+        <div className="px-3 py-2.5 flex items-center justify-between">
+          <h3 className="text-[11px] font-semibold text-ink-secondary uppercase tracking-wider">
+            {title}
+          </h3>
+          <span className={`px-1.5 py-0.5 rounded-sm text-[11px] font-mono font-medium ${countTone}`}>
+            {count}
+          </span>
+        </div>
+        <div className={`bay-mark ${bayClass}`} aria-hidden />
+      </div>
+
+      <div className="flex-1 p-3 overflow-y-auto space-y-2" role="listbox" aria-label={title}>
+        {laneTasks.length === 0 ? (
+          <div className="py-8 px-2 text-left">
+            <p className="text-[11px] text-ink-faint leading-relaxed max-w-[16rem]">
+              {emptyHint(lane)}
+            </p>
+          </div>
+        ) : (
+          laneTasks.map(renderCard)
+        )}
+      </div>
+    </div>
+  );
+
   return (
-    <div className="h-full flex flex-col p-4 md:p-6 overflow-hidden bg-zinc-950">
-      {/* Kanban Header */}
-      <div className="flex items-center justify-between mb-4 shrink-0">
-        <div>
-          <h2 className="font-bold text-base text-zinc-100 flex items-center gap-2">
-            {t.kanbanTitle}
-            <span className="text-xs font-normal text-zinc-500">
-              ({tasks.length} total tasks in `.swarm-runs`)
-            </span>
-          </h2>
-          <p className="text-xs text-zinc-400">{t.kanbanSubtitle}</p>
+    <div
+      ref={boardRef}
+      className="h-full flex flex-col p-4 md:p-6 overflow-hidden bg-page"
+      tabIndex={-1}
+      aria-label={t.kanbanTitle}
+    >
+      <div className="flex items-baseline justify-between mb-3 shrink-0 gap-3">
+        <div className="min-w-0">
+          <h2 className="font-semibold text-sm text-ink tracking-tight">{t.kanbanTitle}</h2>
+          <p className="text-[11px] text-ink-muted mt-0.5">
+            {t.kanbanSubtitle}
+            <span className="text-ink-faint font-mono"> · {tasks.length}</span>
+            <span className="text-ink-faint"> · {t.kanbanKeysHint}</span>
+          </p>
         </div>
       </div>
 
-      {/* 3 Columns Grid */}
       <div className="flex-1 grid grid-cols-1 md:grid-cols-3 gap-4 min-h-0 overflow-hidden">
-        {/* Column 1: Running */}
-        <div className="flex flex-col bg-zinc-900/40 rounded-2xl border border-zinc-800 overflow-hidden">
-          <div className="p-3.5 border-b border-zinc-800/80 bg-zinc-900/60 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 shadow-sm shadow-emerald-400/50 animate-pulse" />
-              <h3 className="text-xs font-bold text-zinc-200 uppercase tracking-wider">{t.colRunning}</h3>
-            </div>
-            <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 text-xs font-bold border border-emerald-500/20 font-mono">
-              {runningTasks.length}
-            </span>
-          </div>
-
-          <div className="flex-1 p-3 overflow-y-auto space-y-3">
-            {runningTasks.length === 0 ? (
-              <div className="h-40 flex flex-col items-center justify-center text-center p-4 text-zinc-600 text-xs">
-                <Activity className="h-6 w-6 mb-2 stroke-[1.5] text-zinc-700" />
-                <span>{t.emptyColumn}</span>
-              </div>
-            ) : (
-              runningTasks.map(renderCard)
-            )}
-          </div>
-        </div>
-
-        {/* Column 2: Completed */}
-        <div className="flex flex-col bg-zinc-900/40 rounded-2xl border border-zinc-800 overflow-hidden">
-          <div className="p-3.5 border-b border-zinc-800/80 bg-zinc-900/60 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <CheckCircle2 className="h-3.5 w-3.5 text-blue-400" />
-              <h3 className="text-xs font-bold text-zinc-200 uppercase tracking-wider">{t.colCompleted}</h3>
-            </div>
-            <span className="px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 text-xs font-bold border border-blue-500/20 font-mono">
-              {completedTasks.length}
-            </span>
-          </div>
-
-          <div className="flex-1 p-3 overflow-y-auto space-y-3">
-            {completedTasks.length === 0 ? (
-              <div className="h-40 flex flex-col items-center justify-center text-center p-4 text-zinc-600 text-xs">
-                <CheckCircle2 className="h-6 w-6 mb-2 stroke-[1.5] text-zinc-700" />
-                <span>{t.emptyColumn}</span>
-              </div>
-            ) : (
-              completedTasks.map(renderCard)
-            )}
-          </div>
-        </div>
-
-        {/* Column 3: Terminated / Failed */}
-        <div className="flex flex-col bg-zinc-900/40 rounded-2xl border border-zinc-800 overflow-hidden">
-          <div className="p-3.5 border-b border-zinc-800/80 bg-zinc-900/60 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="h-3.5 w-3.5 text-amber-400" />
-              <h3 className="text-xs font-bold text-zinc-200 uppercase tracking-wider">{t.colTerminated}</h3>
-            </div>
-            <span className="px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-400 text-xs font-bold border border-zinc-700 font-mono">
-              {terminatedTasks.length}
-            </span>
-          </div>
-
-          <div className="flex-1 p-3 overflow-y-auto space-y-3">
-            {terminatedTasks.length === 0 ? (
-              <div className="h-40 flex flex-col items-center justify-center text-center p-4 text-zinc-600 text-xs">
-                <Ban className="h-6 w-6 mb-2 stroke-[1.5] text-zinc-700" />
-                <span>{t.emptyColumn}</span>
-              </div>
-            ) : (
-              terminatedTasks.map(renderCard)
-            )}
-          </div>
-        </div>
+        {renderLane(
+          t.colRunning,
+          runningTasks.length,
+          'bay-mark-live',
+          runningTasks,
+          'running',
+          'bg-live/10 text-live',
+        )}
+        {renderLane(
+          t.colCompleted,
+          completedTasks.length,
+          'bay-mark-done',
+          completedTasks,
+          'completed',
+          'bg-done/10 text-done',
+        )}
+        {renderLane(
+          t.colTerminated,
+          terminatedTasks.length,
+          'bay-mark-warn',
+          terminatedTasks,
+          'terminated',
+          'bg-surface-muted text-ink-secondary',
+        )}
       </div>
     </div>
   );

@@ -1,6 +1,8 @@
-# DSH Agent Swarm 文档中心 / Documentation Center
+# Agent Hub 文档中心 / Documentation Center
 
-欢迎来到 **DSH Agent Swarm**（原 `dsh-subagent-zcode` 升级版）文档中心。
+欢迎来到 **Agent Hub**（原 `dsh-subagent-zcode` 升级版）文档中心。
+> **⚠️ Face A deprecated.** Live path = Face B swarm board (`npm run start`, [DEMO.md](../DEMO.md), [DISPATCH.md](../DISPATCH.md)). `cordis.patch.yml` / DSH plugin install notes below are archaeology; do not follow them for new work. Verdict / event-log / MCP are parked (ADR-0002 / `.scratch/agent-hub/issues/01d-…`).
+
 
 本系统以 DeepSeek Harness (DSH) 微内核架构为底座骨架，深度融合 **DispatchDock** 的轻量文件流脱钩理念与沉浸式工作台前端，实现了生产级、高可控、不阻塞的子 Agent 协作生态。
 

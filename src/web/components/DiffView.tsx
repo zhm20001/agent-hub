@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { GitCommit, RefreshCw, FileText } from 'lucide-react';
-import type { DiffData } from '../types.ts';
+import { GitBranch, RefreshCw, FileText } from 'lucide-react';
+import type { VcsData } from '../types.ts';
 import { translations, type Language } from '../i18n.ts';
 
 interface DiffViewProps {
@@ -10,79 +10,121 @@ interface DiffViewProps {
 
 export const DiffView: React.FC<DiffViewProps> = ({ taskId, lang }) => {
   const t = translations[lang];
-  const [diffData, setDiffData] = useState<DiffData | null>(null);
+  const [vcsData, setVcsData] = useState<VcsData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
 
-  const fetchDiff = async () => {
+  const fetchVcs = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/tasks/${taskId}/diff`);
+      const res = await fetch(`/api/tasks/${taskId}/vcs`);
       const data = await res.json();
-      setDiffData(data);
+      setVcsData(data);
     } catch {
-      setDiffData(null);
+      setVcsData(null);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchDiff();
+    fetchVcs();
   }, [taskId]);
 
+  const engineLabel =
+    vcsData?.engine === 'jj'
+      ? t.vcsEngineJj
+      : vcsData?.engine === 'git'
+        ? t.vcsEngineGit
+        : t.vcsEngineNone;
+
   return (
-    <div className="flex flex-col h-full bg-zinc-950 font-mono text-xs">
-      <div className="flex items-center justify-between px-4 py-2 border-b border-zinc-800 bg-zinc-900/60 text-zinc-400">
-        <div className="flex items-center gap-2">
-          <GitCommit className="h-4 w-4 text-emerald-400" />
-          <span className="font-semibold text-zinc-300">{t.gitDiffTitle}</span>
+    <div className="flex flex-col h-full bg-page font-mono text-xs">
+      <div className="flex items-center justify-between px-4 py-2 border-b border-line bg-surface/60 text-ink-secondary">
+        <div className="flex items-center gap-2 min-w-0">
+          <GitBranch className="h-4 w-4 text-live shrink-0" />
+          <span className="font-semibold text-ink-secondary truncate">{t.vcsTitle}</span>
+          <span className="px-1.5 py-0.5 rounded-sm bg-surface-muted text-[10px] text-ink-muted shrink-0">
+            {engineLabel}
+          </span>
+          {vcsData?.cwd && (
+            <span className="text-[10px] text-ink-faint truncate hidden sm:inline" title={vcsData.cwd}>
+              {vcsData.cwd}
+            </span>
+          )}
         </div>
         <button
-          onClick={fetchDiff}
+          type="button"
+          onClick={fetchVcs}
           disabled={loading}
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-[11px] transition-colors disabled:opacity-50"
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-sm bg-surface-muted hover:bg-line-strong text-ink-secondary text-[11px] transition-colors disabled:opacity-50"
         >
           <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
-          <span>{t.refreshDiff}</span>
+          <span>{t.refreshVcs}</span>
         </button>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {diffData?.status && (
-          <div className="p-3 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-300">
-            <div className="text-[11px] font-semibold text-zinc-400 mb-1 flex items-center gap-1.5">
-              <FileText className="h-3.5 w-3.5 text-indigo-400" />
-              <span>{t.statusSummary}</span>
-            </div>
-            <pre className="text-zinc-300 text-xs">{diffData.status}</pre>
+        {vcsData?.error && (
+          <div className="p-3 rounded-sm bg-surface border border-line text-ink-secondary text-[11px] leading-relaxed">
+            {vcsData.error}
           </div>
         )}
 
-        <div className="p-4 rounded-lg bg-zinc-900/80 border border-zinc-800">
-          <div className="text-[11px] font-semibold text-zinc-400 mb-2 border-b border-zinc-800 pb-1.5">
-            {t.diffOutput}
+        {vcsData?.status != null && vcsData.status !== '' && (
+          <div className="p-3 rounded-sm bg-surface border border-line text-ink-secondary">
+            <div className="text-[11px] font-semibold text-ink-secondary mb-1 flex items-center gap-1.5">
+              <FileText className="h-3.5 w-3.5 text-accent-soft" />
+              <span>{t.vcsStatusSummary}</span>
+            </div>
+            <pre className="text-ink-secondary text-xs whitespace-pre-wrap">{vcsData.status}</pre>
           </div>
-          <pre className="overflow-x-auto text-xs leading-relaxed">
-            {(diffData?.diff || t.noChangesFound).split('\n').map((line, idx) => {
-              let lineStyle = 'text-zinc-300';
-              if (line.startsWith('+') && !line.startsWith('+++')) {
-                lineStyle = 'text-emerald-400 bg-emerald-950/30 -mx-4 px-4 block';
-              } else if (line.startsWith('-') && !line.startsWith('---')) {
-                lineStyle = 'text-rose-400 bg-rose-950/30 -mx-4 px-4 block';
-              } else if (line.startsWith('@@')) {
-                lineStyle = 'text-cyan-400 font-semibold';
-              } else if (line.startsWith('diff --git')) {
-                lineStyle = 'text-indigo-300 font-bold mt-2 pt-2 border-t border-zinc-800 block';
-              }
-              return (
-                <span key={idx} className={lineStyle}>
-                  {line}
-                  {'\n'}
-                </span>
-              );
-            })}
+        )}
+
+        <div className="p-4 rounded-sm bg-surface/80 border border-line">
+          <div className="text-[11px] font-semibold text-ink-secondary mb-2 border-b border-line pb-1.5">
+            {vcsData?.engine === 'jj' ? t.jjLogOutput : t.vcsLogOutput}
+          </div>
+          <pre className="overflow-x-auto text-xs leading-relaxed whitespace-pre-wrap text-ink-secondary">
+            {vcsData?.log || t.vcsEmpty}
           </pre>
         </div>
+
+        {vcsData?.engine === 'jj' && vcsData.diff ? (
+          <div className="p-4 rounded-sm bg-surface/80 border border-line">
+            <div className="text-[11px] font-semibold text-ink-secondary mb-2 border-b border-line pb-1.5">
+              {t.jjDiffOutput}
+            </div>
+            <pre className="overflow-x-auto text-xs leading-relaxed">
+              {vcsData.diff.split('\n').map((line, idx) => {
+                let lineStyle = 'text-ink-secondary';
+                if (line.startsWith('+') && !line.startsWith('+++')) {
+                  lineStyle = 'text-live bg-emerald-950/30 -mx-4 px-4 block';
+                } else if (line.startsWith('-') && !line.startsWith('---')) {
+                  lineStyle = 'text-danger bg-rose-950/30 -mx-4 px-4 block';
+                } else if (line.startsWith('@@')) {
+                  lineStyle = 'text-cyan-400 font-semibold';
+                }
+                return (
+                  <span key={idx} className={lineStyle}>
+                    {line}
+                    {'\n'}
+                  </span>
+                );
+              })}
+            </pre>
+          </div>
+        ) : null}
+
+        {vcsData?.engine === 'git' && vcsData.diff ? (
+          <div className="p-4 rounded-sm bg-surface/80 border border-line">
+            <div className="text-[11px] font-semibold text-ink-muted mb-2 border-b border-line pb-1.5">
+              {t.gitDiffSecondary}
+            </div>
+            <pre className="overflow-x-auto text-xs leading-relaxed whitespace-pre-wrap text-ink-muted">
+              {vcsData.diff}
+            </pre>
+          </div>
+        ) : null}
       </div>
     </div>
   );

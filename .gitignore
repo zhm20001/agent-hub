@@ -1,3 +1,22 @@
 node_modules/
-lib/
+/lib/
 *.tsbuildinfo
+
+# Mac AppleDouble / resource forks
+._*
+.DS_Store
+
+# Impeccable ephemeral (keep config if created under .impeccable/config*)
+.impeccable/live/
+.impeccable/cache/
+.impeccable/tmp/
+
+# Local agent / design scratch / build noise
+.swarm-runs/
+.scratch/
+.cursor/
+.grok/
+.impeccable/
+dist/
+/json
+/stream-json

@@ -5,11 +5,13 @@ import {
   ensureRunsDir,
   spawnDetachedTask,
   readTaskMeta,
+  readResolution,
   updateTaskMeta,
   killTaskProcess,
   generateReport,
   type TaskMeta,
 } from './runner/detached.ts';
+import { resolveDefaultTimeout } from './runner/timeout-policy.ts';
 import type { DshContext, DshAgent } from './types/dsh.ts';
 
 export function registerSwarmTools(ctx?: DshContext, activeAgentGetter?: () => DshAgent | undefined): void {
@@ -43,7 +45,7 @@ export function registerSwarmTools(ctx?: DshContext, activeAgentGetter?: () => D
       },
       timeout: {
         type: 'number',
-        description: 'Maximum run seconds before watchdog termination (default 1800).',
+        description: 'Maximum run seconds before watchdog termination (default 7200 or AGENT_HUB_DEFAULT_TIMEOUT).',
       },
     },
     async execute(args: any) {
@@ -57,7 +59,7 @@ export function registerSwarmTools(ctx?: DshContext, activeAgentGetter?: () => D
         adapter: args.adapter || 'zcode',
         mode: args.mode || 'edit',
         cwd,
-        timeout: args.timeout || 1800,
+        timeout: args.timeout || resolveDefaultTimeout(),
       });
 
       return {
@@ -111,7 +113,7 @@ export function registerSwarmTools(ctx?: DshContext, activeAgentGetter?: () => D
   // swarm_status
   ctx.tools.register({
     name: 'swarm_status',
-    description: 'Check metadata and log output of a specific swarm task.',
+    description: 'Check metadata, closing record and log output of a specific swarm task.',
     parameters: {
       taskId: {
         type: 'string',
@@ -122,7 +124,9 @@ export function registerSwarmTools(ctx?: DshContext, activeAgentGetter?: () => D
     async execute(args: { taskId: string }) {
       const meta = readTaskMeta(args.taskId);
       if (!meta) return { error: `Task ${args.taskId} not found` };
-      return meta;
+      // The closing record is the platform's answer to "did this run end, why did
+      // it stop, where are the handles" — it carries no verdict (ADR-0002).
+      return { ...meta, closingRecord: readResolution(args.taskId) };
     },
   });
 

@@ -1,4 +1,4 @@
-# DSH Agent Swarm 智能体接入指南 (Agent Guide)
+# Agent Hub 智能体接入指南 (Agent Guide)
 
 本指南面向 AI Master Agent（如 DeepSeek Harness 主控智能体、Claude Code、Cursor 或自研多智能体编排器），详细介绍如何调用 Swarm 提供的工具能力进行子任务委托。
 
@@ -11,7 +11,7 @@
 2. **连接断裂不可逆**：父进程重启或会话刷新，运行中的子进程管道直接断裂，执行现场丢失。
 3. **资源无限泄露**：子进程卡死时缺乏进程级别的主动守护机制。
 
-**DSH Agent Swarm 的破局方案**：
+**Agent Hub 的破局方案**：
 - Master Agent 仅需发起轻量的异步派发，立即获得 `taskId`。
 - 子任务在独立的操作系统进程中脱钩运行，所有输出直接落盘于物理文件 `.swarm-runs/<taskId>/raw.log`。
 - 任务结束时通过文件监听器（Watcher）将执行简报主动唤醒并注入 Master Agent 的上下文。

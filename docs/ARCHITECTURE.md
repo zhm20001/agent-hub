@@ -1,6 +1,6 @@
-# DSH Agent Swarm 系统架构与设计文档 (Architecture)
+# Agent Hub 系统架构与设计文档 (Architecture)
 
-本文档面向核心开发人员与架构师，深入阐述 **DSH Agent Swarm** 的微内核整合模式、脱钩进程架构及 DispatchDock 前后端通信规范。
+本文档面向核心开发人员与架构师，深入阐述 **Agent Hub** 的微内核整合模式、脱钩进程架构及 DispatchDock 前后端通信规范。
 
 ---
 

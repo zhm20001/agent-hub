@@ -3,7 +3,12 @@ description: "The one-shot zcode CLI subagent provider for users and maintainers
 kind: "package-bundle"
 ---
 
-# @deepseek-ai/dsh-subagent-zcode
+# Agent Hub
+
+> **⚠️ Face A deprecated.** The live product path is **Face B swarm** (`swarm_*` tools, `npm run start`, board at `:3000`). Follow **[DEMO.md](./DEMO.md)**. Paths in this README about `zcode_dispatch` / provider / `ctx.zcodeJobs` are obsolete Face A docs kept for archaeology only.
+
+**Product:** Agent Hub (`agent-hub`). Live path = Face B swarm board (`npm run start` / `npm run restart`). This README's install/provider sections below remain Face A archaeology.
+
 
 English | [中文](README.zh.md)
 

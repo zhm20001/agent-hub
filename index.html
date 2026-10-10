@@ -1,18 +1,27 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="zh-CN" data-theme="light">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%236366f1'><path d='M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5'/></svg>" />
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23c47a12'><path d='M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5'/></svg>" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>DSH Agent Swarm</title>
-    <meta name="description" content="DeepSeek Harness subagent swarm workspace with detached runners, DispatchDock stream viewer, Git diff, and task roster." />
-    <meta property="og:title" content="DSH Agent Swarm" />
-    <meta property="og:description" content="DeepSeek Harness subagent swarm workspace with detached runners, DispatchDock stream viewer, Git diff, and task roster." />
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <title>Agent Hub</title>
+    <meta name="description" content="Agent Hub — dispatch coding agents, observe detached runners on the board, stream viewer, Git diff, and task roster." />
+    <meta property="og:title" content="Agent Hub" />
+    <meta property="og:description" content="Agent Hub — dispatch coding agents, observe detached runners on the board, stream viewer, Git diff, and task roster." />
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem('agent-hub-theme');
+          if (t !== 'light' && t !== 'dark') t = 'light';
+          document.documentElement.setAttribute('data-theme', t);
+          if (t === 'dark') document.documentElement.classList.add('dark');
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'light');
+        }
+      })();
+    </script>
   </head>
-  <body class="bg-zinc-950 text-zinc-100 antialiased selection:bg-indigo-500/30 selection:text-indigo-200 min-h-screen">
+  <body class="bg-page text-ink antialiased min-h-screen font-sans">
     <div id="root"></div>
     <script type="module" src="/src/web/main.tsx"></script>
   </body>

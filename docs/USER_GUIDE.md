@@ -1,4 +1,4 @@
-# DSH Agent Swarm 用户使用指南 (User Guide)
+# Agent Hub 用户使用指南 (User Guide)
 
 本指南面向人类开发者与操作人员，介绍如何通过 Web 监控工作台对子 Agent 进行派发、监控与生命周期干预。
 

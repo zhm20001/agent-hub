@@ -1,4 +1,9 @@
 /**
+ * @deprecated Face A deployment config (DSH plugin / zcode_dispatch).
+ * Live Face B hub settings are plain env vars — see DEMO.md / DISPATCH.md:
+ *   AGENT_HUB_TASK_ROOTS, AGENT_HUB_MAX_CONCURRENT, ZCODE_CLI_PATH, PORT.
+ * Do not extend this module for the board; keep changes minimal.
+ *
  * Deployment-owned configuration of the zcode subagent seam: the CLI entry,
  * the cwd whitelist, the process-level concurrency cap, and the default
  * authority posture. Every field is a validated Config value — nothing that
@@ -6,12 +11,22 @@
  * @module @deepseek-ai/dsh-subagent-zcode/config
  */
 
-import { accessSync, constants, existsSync } from 'node:fs'
-import { dirname, isAbsolute, resolve, sep } from 'node:path'
+import { accessSync, constants } from 'node:fs'
+import { isAbsolute, resolve, sep } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 import { assertUsableCwd } from '@deepseek-ai/dsh-subagent'
-import { defaultZcodeDbPath } from './billing.ts'
-import { defaultZcodeLogDir } from './log-tail.ts'
+import { defaultZcodeDbPath } from './_legacy_face_a/billing.ts'
+import { defaultZcodeLogDir } from './_legacy_face_a/log-tail.ts'
+import {
+  BUILTIN_PROVIDER_CONFIG_ENV,
+  defaultBuiltinProviderConfigPath,
+  resolveProviderConfigEnv,
+} from './adapters/preconditions.ts'
+
+// The provider-config rule and its neutral precondition name live in
+// `adapters/preconditions.ts` — one implementation shared by every dispatch
+// path. These re-exports keep the deployment-facing import surface unchanged.
+export { BUILTIN_PROVIDER_CONFIG_ENV, defaultBuiltinProviderConfigPath }
 
 /** Diagnostic prefix used by every fail-loud message of this package. */
 export const PLUGIN_NAME = 'subagent-zcode'
@@ -31,25 +46,6 @@ export type CompletionDelivery = 'followup' | 'quiet'
 
 /** Default process-level cap on concurrent zcode CLI child processes. */
 export const DEFAULT_MAX_CONCURRENT = 2
-
-/**
- * Child environment entry that pins the CLI's builtin provider config. The CLI
- * reads it at startup to materialize its active provider registry, and derives
- * the personal config path itself, so this single entry is the whole injection.
- */
-export const BUILTIN_PROVIDER_CONFIG_ENV = 'ZCODE_BUILTIN_PROVIDER_CONFIG_FILE'
-
-/**
- * Candidate path of the CLI's builtin provider config for a CLI entry in the
- * App packaging layout: the entry lives under `<Resources>/glm/` while the
- * config lives under `<Resources>/config/provider/`, where the CLI's own
- * script-relative candidates both miss.
- * @param zcodeCliPath - absolute path of the CLI entry script.
- * @returns the derived candidate path; whether it exists is the caller's check.
- */
-export function defaultBuiltinProviderConfigPath(zcodeCliPath: string): string {
-  return resolve(dirname(zcodeCliPath), '..', 'config', 'provider', 'zcode-builtin.json')
-}
 
 /**
  * Provider ids the billing self-check accepts. The CLI bills the plan the
@@ -155,22 +151,25 @@ export interface ResolvedConfig {
  * file is absent (the CLI's own lookup then applies); an explicitly configured
  * path must be readable, because injecting a missing path would surface as an
  * unreadable registry inside the child instead of at load.
+ *
+ * The rule itself lives in `adapters/preconditions.ts` so the load-time path and
+ * every dispatch-time path agree; this wrapper only turns its two outcomes into
+ * the deployment-facing contract (a value, or a fail-loud load error).
  * @param config - the raw loader/direct-apply config.
  * @param zcodeCliPath - the already validated CLI entry path.
  * @returns the path to inject, or `undefined`.
  */
 function resolveBuiltinProviderConfigPath(config: Config, zcodeCliPath: string): string | undefined {
-  if (config.builtinProviderConfigPath === undefined) {
-    const derived = defaultBuiltinProviderConfigPath(zcodeCliPath)
-    return existsSync(derived) ? derived : undefined
+  const resolution = resolveProviderConfigEnv(
+    zcodeCliPath,
+    config.builtinProviderConfigPath === undefined ? undefined : resolve(config.builtinProviderConfigPath),
+  )
+  if (resolution.status === 'blocked') {
+    // An explicit path is the operator's declaration, so a bad one fails load.
+    if (config.builtinProviderConfigPath === undefined) return undefined
+    throw new Error(`${PLUGIN_NAME}: builtinProviderConfigPath is not a readable file: ${resolve(config.builtinProviderConfigPath)}`)
   }
-  const configured = resolve(config.builtinProviderConfigPath)
-  try {
-    accessSync(configured, constants.R_OK)
-  } catch {
-    throw new Error(`${PLUGIN_NAME}: builtinProviderConfigPath is not a readable file: ${configured}`)
-  }
-  return configured
+  return resolution.env[BUILTIN_PROVIDER_CONFIG_ENV]
 }
 
 /**

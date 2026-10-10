@@ -1,7 +1,7 @@
 /**
- * DSH Subagent Swarm Plugin entry point.
+ * Agent Hub plugin entry point.
  * Integrates Cordis microkernel plugin with detached task execution and DispatchDock Web UI.
- * @module @deepseek-ai/dsh-subagent-zcode
+ * @module agent-hub
  */
 
 import type { DshContext, DshAgent } from './types/dsh.ts';

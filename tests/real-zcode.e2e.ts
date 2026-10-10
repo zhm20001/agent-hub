@@ -1,3 +1,9 @@
+/**
+ * ⚠️ DEPRECATED — Face A real-CLI e2e (legacy). Quarantined; NOT in `npm test`.
+ * Live path = Face B swarm (tests/faced-*.spec.ts, harvest, task-roots,
+ * concurrency-and-transcript). See DEMO.md / ADR-0002 / src/_legacy_face_a/.
+ * Do not revive Face A assertions here; prefer Face B fixtures.
+ */
 import { accessSync, constants, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -11,7 +17,7 @@ import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import LocalJobRegistry from '@deepseek-ai/dsh-jobs-local'
-import { asZcodeHeadlessOutput } from '../src/cli.ts'
+import { asZcodeHeadlessOutput } from '../src/_legacy_face_a/cli.ts'
 import * as zcode from '../src/index.ts'
 
 /**

@@ -3,7 +3,12 @@ description: "面向要在本机把后台编码任务派发给 ZCode CLI 的用�
 kind: "package-bundle"
 ---
 
-# @deepseek-ai/dsh-subagent-zcode
+# Agent Hub（原 dsh-subagent-zcode）
+
+> **⚠️ Face A 已弃用。** 当前唯一活路径是 **Face B swarm**（`swarm_*` 工具、`npm run start`、`:3000` 看板）。请跟 **[DEMO.md](./DEMO.md)**。本文中关于 `zcode_dispatch` / provider / `ctx.zcodeJobs` 的说明均为 Face A 考古材料。
+
+**产品：** Agent Hub（npm：`agent-hub`）。活路径 = Face B swarm 看板（`npm run start` / `npm run restart`）。下文安装/provider 章节仍为 Face A 考古材料。
+
 
 [English](README.md) | 中文
 

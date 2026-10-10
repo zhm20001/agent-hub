@@ -1,3 +1,9 @@
+/**
+ * ⚠️ DEPRECATED — Face A (legacy). Quarantined; NOT in `npm test`.
+ * Live path = Face B swarm (tests/faced-*.spec.ts, harvest, task-roots,
+ * concurrency-and-transcript). See DEMO.md / ADR-0002 / src/_legacy_face_a/.
+ * Do not revive Face A assertions here; prefer Face B fixtures.
+ */
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -27,14 +33,14 @@ import {
   joinPromptText,
   parseZcodeHeadlessOutput,
   ZcodeOutputError,
-} from '../src/cli.ts'
+} from '../src/_legacy_face_a/cli.ts'
 import { assertInsideTaskRoots, defaultBuiltinProviderConfigPath, resolveConfig, type CompletionDelivery, type Config, type ZcodeMode } from '../src/config.ts'
-import { ZcodeJobIndex, type ZcodeJobRecord } from '../src/job-index.ts'
-import { defaultZcodeDbPath, BillingSelfCheckError, createBillingGuard } from '../src/billing.ts'
-import { defaultZcodeLogDir, zcodeLogTailSource } from '../src/log-tail.ts'
-import { startZcodeRun, subprocessSources, disposeZcodeChild, ZcodeProcessFailure } from '../src/run.ts'
+import { ZcodeJobIndex, type ZcodeJobRecord } from '../src/_legacy_face_a/job-index.ts'
+import { defaultZcodeDbPath, BillingSelfCheckError, createBillingGuard } from '../src/_legacy_face_a/billing.ts'
+import { defaultZcodeLogDir, zcodeLogTailSource } from '../src/_legacy_face_a/log-tail.ts'
+import { startZcodeRun, subprocessSources, disposeZcodeChild, ZcodeProcessFailure } from '../src/_legacy_face_a/run.ts'
 import { settleForegroundRun, settleZcodeJob } from '../src/tools.ts'
-import { noticeSummary, noticeText } from '../src/notice.ts'
+import { noticeSummary, noticeText } from '../src/_legacy_face_a/notice.ts'
 import * as zcode from '../src/index.ts'
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fake-zcode.cjs')

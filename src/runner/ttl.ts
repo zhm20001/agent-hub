@@ -1,6 +1,17 @@
 import { readdirSync, existsSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { SWARM_RUNS_DIR, readTaskMeta, updateTaskMeta, generateReport, killTaskProcess, getTaskDir } from './detached.ts';
+import {
+  SWARM_RUNS_DIR,
+  readTaskMeta,
+  updateTaskMeta,
+  generateReport,
+  killTaskProcess,
+  getTaskDir,
+  readResolution,
+} from './detached.ts';
+import { decideWatchdogAction } from './timeout-policy.ts';
+import { resolveTranscriptPath } from './harvest.ts';
+import { reconcileOrphanRunningTasks } from './reconcile.ts';
 
 export class TtlWatchdog {
   private timer: NodeJS.Timeout | null = null;
@@ -30,6 +41,8 @@ export class TtlWatchdog {
     if (!existsSync(SWARM_RUNS_DIR)) return;
 
     try {
+      // Periodic: settle orphans before TTL decisions (dead PID ≠ timeout kill).
+      reconcileOrphanRunningTasks();
       const entries = readdirSync(SWARM_RUNS_DIR, { withFileTypes: true });
       const now = Date.now();
 
@@ -39,28 +52,62 @@ export class TtlWatchdog {
         const meta = readTaskMeta(taskId);
         if (!meta || meta.status !== 'RUNNING') continue;
 
-        const maxDurationMs = (meta.timeout || 1800) * 1000;
+        const timeoutSec = meta.timeout || 7200;
         const elapsedMs = now - meta.startTime;
+        const taskDir = getTaskDir(taskId);
+        const record = readResolution(taskId);
+        const transcriptPath = record?.transcriptPath
+          ?? resolveTranscriptPath(record?.resolution.transcriptRef)
+          ?? null;
 
-        if (elapsedMs > maxDurationMs) {
-          const timeoutWarning = `\n[WATCHDOG] Task timed out after ${Math.round(elapsedMs / 1000)}s (limit: ${meta.timeout}s). Terminating PID ${meta.pid}...\n`;
-          const rawLogPath = join(getTaskDir(taskId), 'raw.log');
+        const decision = decideWatchdogAction({
+          elapsedMs,
+          timeoutSec,
+          timeoutExtended: meta.timeoutExtended === true,
+          pid: meta.pid,
+          taskDir,
+          transcriptPath,
+          now,
+        });
+
+        if (decision.action === 'wait') continue;
+
+        const rawLogPath = join(taskDir, 'raw.log');
+
+        if (decision.action === 'extend') {
+          const newTimeout = timeoutSec + decision.extendSec;
+          const note = `\n[WATCHDOG] Deadline reached after ${Math.round(elapsedMs / 1000)}s `
+            + `(limit: ${timeoutSec}s) but ${decision.reason}`
+            + (decision.evidencePath ? ` (${decision.evidencePath})` : '')
+            + ` — extending once by ${decision.extendSec}s (new limit: ${newTimeout}s).\n`;
           try {
-            appendFileSync(rawLogPath, timeoutWarning, 'utf8');
+            appendFileSync(rawLogPath, note, 'utf8');
           } catch {}
-
-          if (meta.pid) {
-            killTaskProcess(meta.pid);
-          }
-
-          const updated = updateTaskMeta(taskId, {
-            status: 'TIMEOUT_KILLED',
-            endTime: now,
+          updateTaskMeta(taskId, {
+            timeout: newTimeout,
+            timeoutExtended: true,
           });
+          continue;
+        }
 
-          if (updated) {
-            generateReport(taskId, updated, 'Task exceeded execution TTL limit and was terminated by Watchdog');
-          }
+        // kill
+        const timeoutWarning = `\n[WATCHDOG] Task timed out after ${Math.round(elapsedMs / 1000)}s `
+          + `(limit: ${timeoutSec}s). ${decision.reason}. Terminating PID ${meta.pid}...\n`;
+        try {
+          appendFileSync(rawLogPath, timeoutWarning, 'utf8');
+        } catch {}
+
+        if (meta.pid) {
+          killTaskProcess(meta.pid);
+        }
+
+        const updated = updateTaskMeta(taskId, {
+          status: 'TIMEOUT_KILLED',
+          endTime: now,
+        });
+
+        if (updated) {
+          generateReport(taskId, updated, 'Task exceeded execution TTL limit and was terminated by Watchdog');
         }
       }
     } catch {}

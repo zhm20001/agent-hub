@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Terminal, FileCheck, GitCommit, Code2, Ban, RefreshCw, Folder } from 'lucide-react';
+import { Terminal, FileCheck, GitBranch, Code2, Ban, RefreshCw, Folder, MessagesSquare } from 'lucide-react';
 import type { Task, TaskDetailData } from '../types.ts';
 import { translations, type Language } from '../i18n.ts';
 import { TerminalView } from './TerminalView.tsx';
 import { ReportView } from './ReportView.tsx';
 import { DiffView } from './DiffView.tsx';
+import { ConversationView } from './ConversationView.tsx';
 
 interface TaskDetailProps {
   task: Task;
@@ -12,11 +13,14 @@ interface TaskDetailProps {
   lang: Language;
 }
 
-type TabType = 'terminal' | 'report' | 'diff' | 'json';
+/** Report first; terminal + VCS (jj) last. */
+type TabType = 'report' | 'conversation' | 'json' | 'terminal' | 'vcs';
+
+const TABS: TabType[] = ['report', 'conversation', 'json', 'terminal', 'vcs'];
 
 export const TaskDetail: React.FC<TaskDetailProps> = ({ task, onRefresh, lang }) => {
   const t = translations[lang];
-  const [activeTab, setActiveTab] = useState<TabType>('terminal');
+  const [activeTab, setActiveTab] = useState<TabType>('report');
   const [detailData, setDetailData] = useState<TaskDetailData | null>(null);
   const [isKilling, setIsKilling] = useState<boolean>(false);
 
@@ -31,6 +35,8 @@ export const TaskDetail: React.FC<TaskDetailProps> = ({ task, onRefresh, lang })
   };
 
   useEffect(() => {
+    setActiveTab('report');
+    setDetailData(null);
     fetchDetail();
     const interval = setInterval(fetchDetail, 3000);
     return () => clearInterval(interval);
@@ -50,24 +56,54 @@ export const TaskDetail: React.FC<TaskDetailProps> = ({ task, onRefresh, lang })
 
   const currentTask = detailData || task;
 
+  const tabLabel = (tab: TabType): string => {
+    switch (tab) {
+      case 'report':
+        return t.tabReport;
+      case 'conversation':
+        return t.tabConversation;
+      case 'json':
+        return t.tabJson;
+      case 'terminal':
+        return t.tabTerminal;
+      case 'vcs':
+        return t.tabVcs;
+    }
+  };
+
+  const tabIcon = (tab: TabType) => {
+    const cls = 'h-3.5 w-3.5';
+    switch (tab) {
+      case 'report':
+        return <FileCheck className={cls} />;
+      case 'conversation':
+        return <MessagesSquare className={cls} />;
+      case 'json':
+        return <Code2 className={cls} />;
+      case 'terminal':
+        return <Terminal className={cls} />;
+      case 'vcs':
+        return <GitBranch className={cls} />;
+    }
+  };
+
   return (
-    <div className="flex flex-col h-full bg-zinc-950 overflow-hidden">
-      {/* Top Banner / Toolbar */}
-      <div className="px-6 py-3.5 border-b border-zinc-800 bg-zinc-900/40 flex items-center justify-between">
+    <div className="flex flex-col h-full bg-page overflow-hidden">
+      <div className="px-6 py-3.5 border-b border-line bg-surface/40 flex items-center justify-between">
         <div className="flex items-center gap-3 min-w-0">
           {currentTask.ticket && (
-            <span className="px-2 py-0.5 rounded-md bg-indigo-500/20 text-indigo-300 font-mono text-xs font-bold border border-indigo-500/30">
+            <span className="px-2 py-0.5 rounded-sm bg-accent/15 text-accent-soft font-mono text-xs font-semibold border border-accent/30">
               {currentTask.ticket}
             </span>
           )}
           <div className="min-w-0">
-            <h2 className="text-sm font-bold text-zinc-100 truncate flex items-center gap-2">
+            <h2 className="text-sm font-semibold text-ink truncate flex items-center gap-2">
               <span>{currentTask.label || currentTask.taskId}</span>
-              <span className="text-xs font-mono text-zinc-500 font-normal">({currentTask.taskId})</span>
+              <span className="text-xs font-mono text-ink-muted font-normal">({currentTask.taskId})</span>
             </h2>
-            <div className="flex items-center gap-2 text-[11px] text-zinc-400 font-mono mt-0.5">
+            <div className="flex items-center gap-2 text-[11px] text-ink-secondary font-mono mt-0.5">
               <span className="flex items-center gap-1">
-                <Folder className="h-3 w-3 text-zinc-500" />
+                <Folder className="h-3 w-3 text-ink-muted" />
                 <span className="truncate max-w-xs">{currentTask.cwd}</span>
               </span>
               {currentTask.pid && <span>• {t.pid} {currentTask.pid}</span>}
@@ -80,7 +116,7 @@ export const TaskDetail: React.FC<TaskDetailProps> = ({ task, onRefresh, lang })
             <button
               onClick={handleKill}
               disabled={isKilling}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 text-xs font-medium transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-sm bg-danger/20 hover:bg-danger/30 text-danger border border-danger/30 text-xs font-medium transition-all"
             >
               <Ban className="h-3.5 w-3.5" />
               <span>{isKilling ? t.killing : t.killProcess}</span>
@@ -93,78 +129,45 @@ export const TaskDetail: React.FC<TaskDetailProps> = ({ task, onRefresh, lang })
               onRefresh();
             }}
             title={t.refreshDetail}
-            className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200 transition-colors"
+            className="p-1.5 rounded-sm bg-surface-muted hover:bg-line-strong text-ink-secondary hover:text-ink transition-colors"
           >
             <RefreshCw className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="flex items-center gap-1 px-6 border-b border-zinc-800 bg-zinc-900/20">
-        <button
-          onClick={() => setActiveTab('terminal')}
-          className={`flex items-center gap-2 px-3 py-2.5 text-xs font-medium border-b-2 transition-all ${
-            activeTab === 'terminal'
-              ? 'border-indigo-500 text-indigo-400 font-semibold'
-              : 'border-transparent text-zinc-400 hover:text-zinc-200'
-          }`}
-        >
-          <Terminal className="h-3.5 w-3.5" />
-          <span>{t.tabTerminal}</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('report')}
-          className={`flex items-center gap-2 px-3 py-2.5 text-xs font-medium border-b-2 transition-all ${
-            activeTab === 'report'
-              ? 'border-indigo-500 text-indigo-400 font-semibold'
-              : 'border-transparent text-zinc-400 hover:text-zinc-200'
-          }`}
-        >
-          <FileCheck className="h-3.5 w-3.5" />
-          <span>{t.tabReport}</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('diff')}
-          className={`flex items-center gap-2 px-3 py-2.5 text-xs font-medium border-b-2 transition-all ${
-            activeTab === 'diff'
-              ? 'border-indigo-500 text-indigo-400 font-semibold'
-              : 'border-transparent text-zinc-400 hover:text-zinc-200'
-          }`}
-        >
-          <GitCommit className="h-3.5 w-3.5" />
-          <span>{t.tabDiff}</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('json')}
-          className={`flex items-center gap-2 px-3 py-2.5 text-xs font-medium border-b-2 transition-all ${
-            activeTab === 'json'
-              ? 'border-indigo-500 text-indigo-400 font-semibold'
-              : 'border-transparent text-zinc-400 hover:text-zinc-200'
-          }`}
-        >
-          <Code2 className="h-3.5 w-3.5" />
-          <span>{t.tabJson}</span>
-        </button>
+      <div className="flex items-center gap-1 px-6 border-b border-line bg-surface/20 overflow-x-auto">
+        {TABS.map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            onClick={() => setActiveTab(tab)}
+            className={`flex items-center gap-2 px-3 py-2.5 text-xs font-medium border-b-2 transition-all shrink-0 ${
+              activeTab === tab
+                ? 'border-accent text-accent-soft font-semibold'
+                : 'border-transparent text-ink-secondary hover:text-ink'
+            }`}
+          >
+            {tabIcon(tab)}
+            <span>{tabLabel(tab)}</span>
+          </button>
+        ))}
       </div>
 
-      {/* Active Tab View */}
       <div className="flex-1 overflow-hidden">
-        {activeTab === 'terminal' && (
-          <TerminalView taskId={currentTask.taskId} isLive={currentTask.status === 'RUNNING'} lang={lang} />
-        )}
         {activeTab === 'report' && <ReportView task={currentTask} lang={lang} />}
-        {activeTab === 'diff' && <DiffView taskId={currentTask.taskId} lang={lang} />}
+        {activeTab === 'conversation' && <ConversationView task={currentTask} lang={lang} />}
         {activeTab === 'json' && (
-          <div className="h-full p-4 overflow-y-auto bg-zinc-950 font-mono text-xs">
-            <pre className="p-4 rounded-lg bg-zinc-900 border border-zinc-800 text-indigo-300">
+          <div className="h-full p-4 overflow-y-auto bg-page font-mono text-xs">
+            <pre className="p-4 rounded-sm bg-surface border border-line text-accent-soft">
               {JSON.stringify(currentTask, null, 2)}
             </pre>
           </div>
         )}
+        {activeTab === 'terminal' && (
+          <TerminalView taskId={currentTask.taskId} isLive={currentTask.status === 'RUNNING'} lang={lang} />
+        )}
+        {activeTab === 'vcs' && <DiffView taskId={currentTask.taskId} lang={lang} />}
       </div>
     </div>
   );

@@ -1,30 +1,363 @@
 @import "tailwindcss";
 
+@theme {
+  --font-sans: "Public Sans Variable", "Public Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Semantic colors resolve from CSS vars set per data-theme */
+  --color-page: var(--ah-page);
+  --color-surface: var(--ah-surface);
+  --color-surface-raised: var(--ah-surface-raised);
+  --color-surface-muted: var(--ah-surface-muted);
+  --color-line: var(--ah-line);
+  --color-line-strong: var(--ah-line-strong);
+
+  --color-ink: var(--ah-ink);
+  --color-ink-secondary: var(--ah-ink-secondary);
+  --color-ink-muted: var(--ah-ink-muted);
+  --color-ink-faint: var(--ah-ink-faint);
+
+  --color-accent: var(--ah-accent);
+  --color-accent-bright: var(--ah-accent-bright);
+  --color-accent-soft: var(--ah-accent-soft);
+  --color-accent-dim: var(--ah-accent-dim);
+
+  --color-live: var(--ah-live);
+  --color-done: var(--ah-done);
+  --color-danger: var(--ah-danger);
+  --color-danger-action: var(--ah-danger-action);
+  --color-warn: var(--ah-warn);
+  --color-meta: var(--ah-meta);
+
+  --color-md-link: var(--ah-md-link);
+  --color-md-code-bg: var(--ah-md-code-bg);
+  --color-md-pre-bg: var(--ah-md-pre-bg);
+
+  --color-cta: var(--ah-cta-fg);
+  --color-cta-fg: var(--ah-cta-fg);
+
+  --radius-sm: 0.125rem;
+  --radius-md: 0.25rem;
+  --radius-lg: 0.375rem;
+  --radius-xl: 0.5rem;
+}
+
+/*
+  Cold Paper Workshop (default / light) — Swiss Style / International Typographic Style
+  Cool white ground, thin gray rules, amber as signal only. Müller-Brockmann rigor for Operate.
+*/
+:root,
+[data-theme="light"] {
+  --ah-page: #f5f6f8;
+  --ah-surface: #ffffff;
+  --ah-surface-raised: #ffffff;
+  --ah-surface-muted: #eceef2;
+  --ah-line: #dde1e6;
+  --ah-line-strong: #c5cad3;
+
+  --ah-ink: #141820;
+  --ah-ink-secondary: #4a5568;
+  --ah-ink-muted: #596273;
+  --ah-ink-faint: #6e7684;
+
+  --ah-accent: #c47a12;
+  --ah-accent-bright: #a8680f;
+  --ah-accent-soft: #8f5c10;
+  --ah-accent-dim: #7a4e0c;
+
+  --ah-live: #0a7a54;
+  --ah-done: #2a6f9e;
+  --ah-danger: #c43c3c;
+  --ah-danger-action: #a83232;
+  --ah-warn: #8a6808;
+  --ah-meta: #5a7388;
+
+  --ah-md-link: #2a6f9e;
+  --ah-md-code-bg: rgba(236, 238, 242, 0.95);
+  --ah-md-pre-bg: #eceef2;
+  --ah-cta-fg: #ffffff;
+  --ah-selection: rgba(196, 122, 18, 0.22);
+  --ah-overlay: rgba(20, 24, 32, 0.45);
+}
+
+/* Night Yard (dark) — asphalt blue-black, sodium amber */
+[data-theme="dark"] {
+  --ah-page: #0a0e14;
+  --ah-surface: #121820;
+  --ah-surface-raised: #1a222d;
+  --ah-surface-muted: #243040;
+  --ah-line: #2a3544;
+  --ah-line-strong: #3d4d5f;
+
+  --ah-ink: #e8edf2;
+  --ah-ink-secondary: #9aa8b8;
+  --ah-ink-muted: #6b7a8d;
+  --ah-ink-faint: #4a5868;
+
+  --ah-accent: #c47a12;
+  --ah-accent-bright: #e09420;
+  --ah-accent-soft: #f0b45a;
+  --ah-accent-dim: #8a5610;
+
+  --ah-live: #2dd4a0;
+  --ah-done: #5b9fd4;
+  --ah-danger: #e85d5d;
+  --ah-danger-action: #c43c3c;
+  --ah-warn: #e8b84a;
+  --ah-meta: #7a9bb0;
+
+  --ah-md-link: #5b9fd4;
+  --ah-md-code-bg: rgba(36, 48, 64, 0.85);
+  --ah-md-pre-bg: rgba(10, 14, 20, 0.85);
+  --ah-cta-fg: #0a0e14;
+  --ah-selection: rgba(196, 122, 18, 0.35);
+  --ah-overlay: rgba(0, 0, 0, 0.75);
+}
+
 @layer base {
-  body {
-    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  html {
+    color-scheme: light;
   }
-  
-  code, pre, .font-mono {
-    font-family: 'JetBrains Mono', monospace;
+  html[data-theme="dark"] {
+    color-scheme: dark;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: var(--ah-page);
+    color: var(--ah-ink);
+    text-align: left;
+  }
+
+  code,
+  pre,
+  .font-mono {
+    font-family: var(--font-mono);
+  }
+
+  ::selection {
+    background-color: var(--ah-selection);
+    color: var(--ah-accent-soft);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ah-accent);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
   }
 }
 
-/* Custom scrollbars for DispatchDock terminal */
+/* Swiss-quiet scrollbars — thin functional chrome */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
-
 ::-webkit-scrollbar-track {
-  background: rgba(24, 24, 27, 0.6);
+  background: transparent;
 }
-
 ::-webkit-scrollbar-thumb {
-  background: rgba(82, 82, 91, 0.5);
-  border-radius: 9999px;
+  background: color-mix(in srgb, var(--ah-line-strong) 80%, transparent);
+  border-radius: 0;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ah-ink-muted);
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(113, 113, 122, 0.8);
+/* Signature: bay-mark — horizontal occupancy rule under swimlane headers */
+.bay-mark {
+  height: 2px;
+  width: 100%;
+  background: var(--bay-ink, var(--ah-line-strong));
+  border-radius: 0;
+  opacity: 0.95;
+}
+.bay-mark-live {
+  --bay-ink: var(--ah-live);
+}
+.bay-mark-done {
+  --bay-ink: var(--ah-done);
+}
+.bay-mark-warn {
+  --bay-ink: var(--ah-warn);
+}
+
+/* CTA text on accent — theme-aware */
+.text-cta {
+  color: var(--ah-cta-fg);
+}
+
+/* Resizable split handle */
+.split-handle {
+  width: 5px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  z-index: 10;
+}
+.split-handle::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 1px;
+  left: 2px;
+  background: var(--ah-line);
+  transition: background 150ms ease-out;
+}
+.split-handle:hover::after,
+.split-handle:focus-visible::after,
+.split-handle[data-dragging="true"]::after {
+  background: var(--ah-accent);
+  width: 2px;
+  left: 1.5px;
+}
+
+/* Overflow menu panel */
+.ah-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  min-width: 11rem;
+  background: var(--ah-surface);
+  border: 1px solid var(--ah-line);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--ah-ink) 8%, transparent);
+  padding: 0.25rem;
+  z-index: 50;
+}
+[data-theme="dark"] .ah-menu {
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--ah-page) 55%, transparent);
+}
+.ah-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.625rem;
+  font-size: 0.75rem;
+  color: var(--ah-ink-secondary);
+  border-radius: var(--radius-sm);
+  text-align: left;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.ah-menu-item:hover {
+  background: var(--ah-surface-muted);
+  color: var(--ah-ink);
+}
+
+/* Modal overlay without glass blur (Swiss functional) */
+.ah-overlay {
+  background: var(--ah-overlay);
+}
+
+/* GFM markdown */
+.ah-md {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 1.55;
+  color: inherit;
+  overflow-x: auto;
+  text-align: left;
+}
+.ah-md > :first-child {
+  margin-top: 0;
+}
+.ah-md > :last-child {
+  margin-bottom: 0;
+}
+.ah-md h1,
+.ah-md h2,
+.ah-md h3,
+.ah-md h4 {
+  font-weight: 700;
+  color: var(--ah-ink);
+  margin: 0.75em 0 0.35em;
+  line-height: 1.3;
+}
+.ah-md h1 {
+  font-size: 1.25em;
+}
+.ah-md h2 {
+  font-size: 1.15em;
+}
+.ah-md h3 {
+  font-size: 1.05em;
+}
+.ah-md p {
+  margin: 0.4em 0;
+}
+.ah-md ul,
+.ah-md ol {
+  margin: 0.4em 0;
+  padding-left: 1.4em;
+}
+.ah-md li {
+  margin: 0.15em 0;
+}
+.ah-md code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: var(--ah-md-code-bg);
+  padding: 0.1em 0.35em;
+  border-radius: var(--radius-sm);
+}
+.ah-md pre {
+  font-family: var(--font-mono);
+  background: var(--ah-md-pre-bg);
+  border: 1px solid color-mix(in srgb, var(--ah-line-strong) 70%, transparent);
+  border-radius: var(--radius-md);
+  padding: 0.6rem 0.75rem;
+  overflow-x: auto;
+  margin: 0.5em 0;
+}
+.ah-md pre code {
+  background: transparent;
+  padding: 0;
+}
+.ah-md table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.5em 0;
+  font-size: 0.95em;
+}
+.ah-md th,
+.ah-md td {
+  border: 1px solid color-mix(in srgb, var(--ah-line-strong) 80%, transparent);
+  padding: 0.35em 0.55em;
+  text-align: left;
+  vertical-align: top;
+}
+.ah-md th {
+  background: color-mix(in srgb, var(--ah-surface-muted) 90%, transparent);
+  color: var(--ah-ink-secondary);
+  font-weight: 600;
+}
+.ah-md blockquote {
+  margin: 0.5em 0;
+  padding: 0.35em 0.75em;
+  background: color-mix(in srgb, var(--ah-surface-muted) 45%, transparent);
+  border-radius: var(--radius-sm);
+  color: var(--ah-ink-secondary);
+  font-style: italic;
+}
+.ah-md a {
+  color: var(--ah-md-link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.ah-md hr {
+  border: none;
+  border-top: 1px solid color-mix(in srgb, var(--ah-line-strong) 80%, transparent);
+  margin: 0.75em 0;
 }

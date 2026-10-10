@@ -1,6 +1,6 @@
 {
-  "name": "DSH Agent Swarm",
-  "description": "DeepSeek Harness subagent swarm workspace with detached runners, DispatchDock stream viewer, Git diff, and task roster.",
+  "name": "Agent Hub",
+  "description": "Agent Hub \u2014 dispatch coding agents, observe detached runners on the board, DispatchDock stream viewer, Git diff, and task roster.",
   "permissions": [],
   "capabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

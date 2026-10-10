@@ -1,7 +1,21 @@
-import React from 'react';
-import { Play, Activity, CheckCircle2, ShieldAlert, RefreshCw, Layers, Languages, LayoutGrid, SplitSquareVertical } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  Play,
+  Activity,
+  CheckCircle2,
+  ShieldAlert,
+  RefreshCw,
+  Layers,
+  Languages,
+  LayoutGrid,
+  Columns2,
+  MoreHorizontal,
+  Sun,
+  Moon,
+} from 'lucide-react';
 import type { Task } from '../types.ts';
 import { translations, type Language } from '../i18n.ts';
+import type { ThemeMode } from '../lib/theme.ts';
 
 interface HeaderProps {
   tasks: Task[];
@@ -12,6 +26,8 @@ interface HeaderProps {
   onToggleLang: () => void;
   viewMode: 'kanban' | 'timeline';
   onSelectViewMode: (mode: 'kanban' | 'timeline') => void;
+  theme: ThemeMode;
+  onToggleTheme: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -23,104 +39,169 @@ export const Header: React.FC<HeaderProps> = ({
   onToggleLang,
   viewMode,
   onSelectViewMode,
+  theme,
+  onToggleTheme,
 }) => {
   const t = translations[lang];
-  const runningCount = tasks.filter((t) => t.status === 'RUNNING').length;
-  const completedCount = tasks.filter((t) => t.status === 'COMPLETED').length;
-  const failedCount = tasks.filter((t) => t.status === 'FAILED' || t.status === 'TIMEOUT_KILLED').length;
+  const runningCount = tasks.filter((task) => task.status === 'RUNNING').length;
+  const completedCount = tasks.filter((task) => task.status === 'COMPLETED').length;
+  const failedCount = tasks.filter(
+    (task) => task.status === 'FAILED' || task.status === 'TIMEOUT_KILLED'
+  ).length;
+
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [menuOpen]);
 
   return (
-    <header className="border-b border-zinc-800 bg-zinc-900/80 backdrop-blur-md px-6 py-3.5 sticky top-0 z-30 flex items-center justify-between">
-      <div className="flex items-center gap-4">
-        <div className="flex items-center gap-2.5">
-          <div className="h-9 w-9 rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-sky-400 p-0.5 shadow-lg shadow-indigo-500/20 flex items-center justify-center text-white">
-            <Layers className="h-5 w-5" />
+    <header className="border-b border-line bg-surface px-6 py-3 sticky top-0 z-30 flex items-center justify-between gap-4">
+      <div className="flex items-center gap-4 min-w-0">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div
+            className="h-7 w-7 rounded-sm bg-accent flex items-center justify-center text-cta shrink-0"
+            aria-hidden
+          >
+            <Layers className="h-3.5 w-3.5" strokeWidth={2.25} />
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="font-bold text-base tracking-tight text-white flex items-center gap-2">
-                {t.appName}
-                <span className="text-[10px] font-semibold tracking-wider uppercase px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
-                  {t.badgeDispatchDock}
-                </span>
-              </h1>
-            </div>
-            <p className="text-xs text-zinc-400">{t.subtitle}</p>
+          <div className="min-w-0 text-left">
+            <h1 className="font-semibold text-[15px] tracking-tight text-ink truncate">
+              {t.appName}
+              <span className="ml-2 text-[10px] font-medium tracking-wide uppercase text-ink-muted">
+                {theme === "light" ? t.badgeLight : t.badgeDark}
+              </span>
+            </h1>
+            <p className="text-[11px] text-ink-muted truncate">{t.subtitle}</p>
           </div>
         </div>
 
-        <div className="hidden md:flex items-center gap-2 ml-6 pl-6 border-l border-zinc-800">
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-800/60 border border-zinc-700/50 text-xs">
-            <Activity className={`h-3.5 w-3.5 ${runningCount > 0 ? 'text-emerald-400 animate-pulse' : 'text-zinc-500'}`} />
-            <span className="text-zinc-400">{t.running}:</span>
-            <span className="font-semibold text-zinc-200">{runningCount}</span>
-          </div>
-
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-800/60 border border-zinc-700/50 text-xs">
-            <CheckCircle2 className="h-3.5 w-3.5 text-blue-400" />
-            <span className="text-zinc-400">{t.done}:</span>
-            <span className="font-semibold text-zinc-200">{completedCount}</span>
-          </div>
-
+        <div className="hidden md:flex items-center gap-3 ml-4 pl-4 border-l border-line text-[11px]">
+          <span className="flex items-center gap-1.5 text-ink-secondary">
+            <Activity
+              className={`h-3 w-3 ${runningCount > 0 ? 'text-live' : 'text-ink-faint'}`}
+            />
+            <span className="text-ink-muted">{t.running}</span>
+            <span className="font-semibold tabular-nums text-ink">{runningCount}</span>
+          </span>
+          <span className="flex items-center gap-1.5 text-ink-secondary">
+            <CheckCircle2 className="h-3 w-3 text-done" />
+            <span className="text-ink-muted">{t.done}</span>
+            <span className="font-semibold tabular-nums text-ink">{completedCount}</span>
+          </span>
           {failedCount > 0 && (
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-red-950/40 border border-red-800/40 text-xs">
-              <ShieldAlert className="h-3.5 w-3.5 text-rose-400" />
-              <span className="text-rose-300">{t.errors}:</span>
-              <span className="font-semibold text-rose-200">{failedCount}</span>
-            </div>
+            <span className="flex items-center gap-1.5 text-danger">
+              <ShieldAlert className="h-3 w-3" />
+              <span>{t.errors}</span>
+              <span className="font-semibold tabular-nums">{failedCount}</span>
+            </span>
           )}
         </div>
       </div>
 
-      <div className="flex items-center gap-2.5">
-        {/* View Mode Toggle: Kanban vs Timeline */}
-        <div className="flex items-center bg-zinc-950 p-1 rounded-xl border border-zinc-800">
+      <div className="flex items-center gap-2 shrink-0">
+        <div
+          className="flex items-center border border-line rounded-sm p-0.5 bg-page"
+          role="group"
+          aria-label={t.viewModeLabel}
+        >
           <button
+            type="button"
             onClick={() => onSelectViewMode('kanban')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-sm text-[11px] font-medium transition-colors ${
               viewMode === 'kanban'
-                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
-                : 'text-zinc-400 hover:text-zinc-200'
+                ? 'bg-surface-muted text-ink'
+                : 'text-ink-muted hover:text-ink'
             }`}
           >
             <LayoutGrid className="h-3.5 w-3.5" />
-            <span>{t.viewKanban}</span>
+            <span className="hidden sm:inline">{t.viewKanban}</span>
           </button>
           <button
+            type="button"
             onClick={() => onSelectViewMode('timeline')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-sm text-[11px] font-medium transition-colors ${
               viewMode === 'timeline'
-                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
-                : 'text-zinc-400 hover:text-zinc-200'
+                ? 'bg-surface-muted text-ink'
+                : 'text-ink-muted hover:text-ink'
             }`}
           >
-            <SplitSquareVertical className="h-3.5 w-3.5" />
-            <span>{t.viewTimeline}</span>
+            <Columns2 className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">{t.viewTimeline}</span>
           </button>
         </div>
 
-        {/* Bilingual switch button */}
         <button
-          onClick={onToggleLang}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700/80 border border-zinc-700/60 text-zinc-300 hover:text-white text-xs font-medium transition-all"
-          title={lang === 'zh' ? 'Switch to English' : '切换为中文'}
+          type="button"
+          onClick={onToggleTheme}
+          title={theme === 'light' ? t.themeToDark : t.themeToLight}
+          className="p-2 rounded-sm border border-line text-ink-secondary hover:text-ink hover:bg-surface-muted transition-colors"
+          aria-label={theme === 'light' ? t.themeToDark : t.themeToLight}
         >
-          <Languages className="h-3.5 w-3.5 text-indigo-400" />
-          <span className="font-mono">{t.langToggle}</span>
+          {theme === 'light' ? <Moon className="h-3.5 w-3.5" /> : <Sun className="h-3.5 w-3.5" />}
         </button>
 
-        <button
-          onClick={onRefresh}
-          disabled={isLoading}
-          title={t.refreshRoster}
-          className="p-2 rounded-lg bg-zinc-800/80 hover:bg-zinc-700/80 border border-zinc-700/60 text-zinc-400 hover:text-zinc-200 transition-colors disabled:opacity-50"
-        >
-          <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
-        </button>
+        <div className="relative" ref={menuRef}>
+          <button
+            type="button"
+            onClick={() => setMenuOpen((o) => !o)}
+            className="p-2 rounded-sm border border-line text-ink-secondary hover:text-ink hover:bg-surface-muted transition-colors"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            title={t.moreActions}
+          >
+            <MoreHorizontal className="h-3.5 w-3.5" />
+          </button>
+          {menuOpen && (
+            <div className="ah-menu" role="menu">
+              <button
+                type="button"
+                role="menuitem"
+                className="ah-menu-item"
+                onClick={() => {
+                  onToggleLang();
+                  setMenuOpen(false);
+                }}
+              >
+                <Languages className="h-3.5 w-3.5 text-ink-muted" />
+                <span>{t.langToggle}</span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="ah-menu-item"
+                disabled={isLoading}
+                onClick={() => {
+                  onRefresh();
+                  setMenuOpen(false);
+                }}
+              >
+                <RefreshCw className={`h-3.5 w-3.5 text-ink-muted ${isLoading ? 'animate-spin' : ''}`} />
+                <span>{t.refreshRoster}</span>
+              </button>
+            </div>
+          )}
+        </div>
 
         <button
+          type="button"
           onClick={onOpenDispatch}
-          className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-medium text-xs shadow-md shadow-indigo-600/25 transition-all hover:scale-[1.02]"
+          className="flex items-center gap-2 px-3.5 py-2 rounded-sm bg-accent hover:bg-accent-bright active:bg-accent-dim text-cta font-medium text-xs transition-colors"
         >
           <Play className="h-3.5 w-3.5 fill-current" />
           <span>{t.dispatchSubagent}</span>
@@ -129,4 +210,3 @@ export const Header: React.FC<HeaderProps> = ({
     </header>
   );
 };
-

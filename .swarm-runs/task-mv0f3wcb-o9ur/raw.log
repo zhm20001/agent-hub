@@ -1,7 +1,0 @@
-=== Swarm Task task-mv0f3wcb-o9ur [T2] ===
-Adapter: bash | Started: 2026-10-09T03:40:38.651Z
-Command: bash -c git status -s && git log -n 3 --oneline
-Working Dir: /app/applet
-====================================================
-
-fatal: not a git repository (or any of the parent directories): .git
