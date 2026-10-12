@@ -1,6 +1,6 @@
 {
   "name": "agent-hub",
-  "description": "Agent Hub — dispatch coding agents across adapters, observe and intervene via the board (Face B swarm)",
+  "description": "Agent Hub — dispatch coding agents across adapters, observe and intervene via the board",
   "version": "0.2.0-rc.1",
   "publishConfig": {
     "access": "public"
@@ -22,7 +22,6 @@
   },
   "files": [
     "lib/index.js",
-    "cordis.patch.yml",
     "lib/types/**/*.d.ts"
   ],
   "license": "MIT",
@@ -34,11 +33,6 @@
     "transcript": "node --import tsx src/runner/read-transcript.ts",
     "restart": "bash scripts/restart-board.sh",
     "dispatch-tickets": "node scripts/dispatch-tickets.mjs"
-  },
-  "dsh": {
-    "bundle": {
-      "patch": "./cordis.patch.yml"
-    }
   },
   "dependencies": {
     "@fontsource-variable/public-sans": "^5.3.0",

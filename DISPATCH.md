@@ -1,4 +1,4 @@
-# Dispatching tickets → Agent Hub (Face B)
+# Dispatching tickets → Agent Hub
 
 Matt-style tickets in, HTTP dispatch out. No LLM in the batch path.
 
@@ -100,7 +100,7 @@ Not required in every ticket file (directory-level defaults).
 
 ## Resume + model selection (ZCode)
 
-- **Resume:** pass `resumeSessionId` on `POST /api/tasks/dispatch` (Face B adapter already passes `--resume`).
+- **Resume:** pass `resumeSessionId` on `POST /api/tasks/dispatch` (zcode adapter already passes `--resume`).
 - **Model:** headless ZCode has **no** `--model` flag. Durable default + temp switch / restore: **[docs/zcode-default-model.md](./docs/zcode-default-model.md)** (`~/.zcode/v2/provider_config.json` → `config.defaultModelSelection`). Do not invent CLI flags; do not paste API keys into tickets or git.
 
 ## COMPLETED ≠ success
@@ -147,7 +147,7 @@ Flags:
 
 No LLM. Fixtures / curl only.
 
-## Env vars (Face B)
+## Env vars
 
 | Env | Default | Role |
 | --- | --- | --- |

@@ -1,7 +1,6 @@
-# Face B 最小可跑 Demo（Human Runbook）
+# Agent Hub 最小可跑 Demo（Human Runbook）
 
-> **Live path = Face B swarm**（`swarm_dispatch` / `npm run start` + board）。
-> Face A（`zcode_dispatch` / provider / `ctx.zcodeJobs`）已弃用，README 里旧路径不要再跟。
+> **Live path = Agent Hub swarm board**（`swarm_dispatch` / `npm run start` + board）。
 
 ## 一句话原则（ADR-0002）
 
@@ -14,7 +13,7 @@ cd /Users/zhm20001/dsh/Agent-hub   # 真树（含 .jj / .swarm-runs）；不要�
 # 或：cd <repo-root>  — 文件夹改名后从新路径进入即可
 export ZCODE_CLI_PATH=/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs
 # 缺少或路径无效时，派发会 fail-loud（不再偷偷落到 tests/fixtures/fake-zcode.cjs）
-# 可选 Face B env：
+# 可选 env：
 #   export AGENT_HUB_TASK_ROOTS="$PWD:/path/to/other-workspace"
 #   export AGENT_HUB_MAX_CONCURRENT=3          # 全局 RUNNING 上限；满员 → HTTP 429
 #   export AGENT_HUB_DEFAULT_TIMEOUT=7200      # 默认 TTL（秒）；到期先探测进度再决定是否延长/杀掉
@@ -202,4 +201,3 @@ For colocated jj repos with `origin` (fork) + `upstream` (canonical), open PRs i
 - ZCode 默认模型（headless 无 `--model`）：[docs/zcode-default-model.md](./docs/zcode-default-model.md)
 - 活路径细节：`docs/agent-hub/`、`CONTEXT.md`
 - 批量派发：[DISPATCH.md](./DISPATCH.md)
-- 弃用 Face A：见 README 顶部横幅；旧模块在 `src/_legacy_face_a/`；`cordis.patch.yml` 已标弃用
