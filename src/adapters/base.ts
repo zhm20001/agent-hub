@@ -1,3 +1,4 @@
+import type { TranscriptDocument } from '../shared/transcript.ts';
 /**
  * WorkerAdapter interface for Agent Hub.
  * Allows pluggable subagent execution backends (ZCode CLI, Shell/Bash, Codex, etc.).
@@ -102,5 +103,7 @@ export interface WorkerAdapter {
    * Return null when unavailable. Never substitute another session for a known
    * handle. Omitted means this adapter does not support on-disk discovery.
    */
+  parseTranscript?(input: unknown): TranscriptDocument;
+
   locateTranscript?(input: TranscriptLookup): LocatedTranscript | null;
 }

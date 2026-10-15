@@ -99,6 +99,7 @@ export function settleTask(taskId: string, facts: {
   // Best-effort model/provider for the kanban card (from model-io or raw output).
   const modelInfo = resolveModelInfo({
     transcriptPath: toWrite.transcriptPath,
+    adapter: facts.adapter.name,
     output: facts.output,
   });
   const patch: Partial<TaskMeta> = {};

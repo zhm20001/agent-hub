@@ -20,7 +20,7 @@ import {
 } from './runner/detached.ts';
 import { harvestTask, repairTaskTranscript, resolutionJsonPath } from './runner/harvest.ts';
 import { reconcileOrphanRunningTasks, reconcileOrphanTask } from './runner/reconcile.ts';
-import { summarizeTranscript } from './web/lib/board-ux.ts';
+import { readTranscriptDocument, summarizeDocument } from './runner/transcript-document.ts';
 import { resolveModelInfo } from './runner/model-info.ts';
 import { TtlWatchdog } from './runner/ttl.ts';
 import { SwarmRunsWatcher, type TaskCompletionCallback } from './watcher.ts';
@@ -133,7 +133,7 @@ function createApp() {
     if (harvest.transcriptPath) {
       const patch: Partial<TaskMeta> = {};
       if (!meta.modelId && !meta.providerId) {
-        const info = resolveModelInfo({ transcriptPath: harvest.transcriptPath });
+        const info = resolveModelInfo({ transcriptPath: harvest.transcriptPath, adapter: meta.adapter });
         if (info?.modelId) patch.modelId = info.modelId;
         if (info?.providerId) patch.providerId = info.providerId;
       }
@@ -415,7 +415,7 @@ function createApp() {
 
     // Backfill model/provider when still missing (TIMEOUT cards).
     if ((!meta.modelId && !meta.providerId) && typeof transcriptPath === 'string') {
-      const info = resolveModelInfo({ transcriptPath });
+      const info = resolveModelInfo({ transcriptPath, adapter: meta.adapter });
       if (info !== null) {
         updateTaskMeta(id, {
           ...info.modelId ? { modelId: info.modelId } : {},
@@ -435,14 +435,9 @@ function createApp() {
       });
     }
 
-    let body: string;
-    try {
-      body = readFileSync(transcriptPath, 'utf8');
-    } catch (err: any) {
-      return res.status(500).json({ error: err.message ?? String(err) });
-    }
-
-    const turns = summarizeTranscript(body);
+    const document = readTranscriptDocument(transcriptPath, meta.adapter);
+    if (document === null) return res.status(500).json({ error: 'Transcript could not be read' });
+    const turns = summarizeDocument(document);
     res.json({
       turns,
       transcriptPath,

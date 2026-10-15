@@ -1,3 +1,4 @@
+import { readTranscriptDocument, parseTranscriptDocument, lastAssistantText } from './transcript-document.ts';
 /**
  * Mechanical harvest for the board Report view (ADR-0002).
  *
@@ -14,7 +15,7 @@
  * @module
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { FinalText } from '../adapters/contract.ts';
 import { writeRunRecord, type RunRecord } from './settlement.ts';
@@ -97,150 +98,9 @@ export function truncateText(text: string, cap: number = LAST_TURN_CAP): Truncat
   };
 }
 
-/**
- * Extract the last assistant / agent reply text from a transcript document.
- *
- * Accepts:
- *   - an array of readback-style messages (`role` + `parts[].text`);
- *   - a single JSON object (model-io line, or `{ messages: [...] }`);
- *   - a JSONL string (zcode `transcript.jsonl` / `model-io-*.jsonl`).
- *
- * Returns `null` when nothing recognizable is found — caller falls back to
- * `finalText`. Never invents content.
- */
+/** Compatibility helper; production file reads carry the owning adapter. */
 export function extractLastAssistantMessage(input: unknown): string | null {
-  if (typeof input === 'string') {
-    const trimmed = input.trim();
-    if (trimmed.length === 0) return null;
-    // JSONL: try line-by-line first (transcript.jsonl / model-io).
-    if (trimmed.includes('\n') || looksLikeJsonl(trimmed)) {
-      const fromJsonl = extractFromJsonl(trimmed);
-      if (fromJsonl !== null) return fromJsonl;
-    }
-    try {
-      return extractLastAssistantMessage(JSON.parse(trimmed));
-    } catch {
-      return null;
-    }
-  }
-
-  if (Array.isArray(input)) {
-    return extractFromMessages(input);
-  }
-
-  if (typeof input !== 'object' || input === null) return null;
-  const obj = input as Record<string, unknown>;
-
-  // model-io line: { response: { text: "..." } }
-  const response = obj['response'];
-  if (typeof response === 'string' && response.length > 0) return response;
-  if (typeof response === 'object' && response !== null) {
-    const text = (response as Record<string, unknown>)['text'];
-    if (typeof text === 'string' && text.length > 0) return text;
-  }
-
-  if (Array.isArray(obj['messages'])) {
-    return extractFromMessages(obj['messages'] as readonly unknown[]);
-  }
-
-  // turn_complete / model_complete style single event
-  const payload = obj['payload'];
-  if (typeof payload === 'object' && payload !== null) {
-    const p = payload as Record<string, unknown>;
-    if (typeof p['response'] === 'string' && p['response'].length > 0) return p['response'];
-    if (typeof p['content'] === 'string' && p['content'].length > 0) return p['content'];
-  }
-
-  return null;
-}
-
-function looksLikeJsonl(text: string): boolean {
-  const first = text.split('\n', 1)[0]?.trim() ?? '';
-  return first.startsWith('{') && first.endsWith('}');
-}
-
-function extractFromJsonl(text: string): string | null {
-  let lastTurnComplete: string | null = null;
-  let lastModelComplete: string | null = null;
-  let lastResponseText: string | null = null;
-
-  for (const line of text.split('\n')) {
-    const trimmed = line.trim();
-    if (trimmed.length === 0) continue;
-    let obj: Record<string, unknown>;
-    try {
-      const parsed: unknown = JSON.parse(trimmed);
-      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) continue;
-      obj = parsed as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-
-    const type = obj['type'];
-    const payload = obj['payload'];
-    if (typeof payload === 'object' && payload !== null) {
-      const p = payload as Record<string, unknown>;
-      if (type === 'turn_complete' && typeof p['response'] === 'string' && p['response'].length > 0) {
-        lastTurnComplete = p['response'];
-      }
-      if (type === 'model_complete' && typeof p['content'] === 'string' && p['content'].length > 0) {
-        // Prefer a final stop over mid-turn tool-call completes.
-        if (p['stopReason'] !== 'tool-calls') lastModelComplete = p['content'];
-      }
-    }
-
-    const response = obj['response'];
-    if (typeof response === 'object' && response !== null) {
-      const textValue = (response as Record<string, unknown>)['text'];
-      if (typeof textValue === 'string' && textValue.length > 0) lastResponseText = textValue;
-    } else if (typeof response === 'string' && response.length > 0) {
-      lastResponseText = response;
-    }
-  }
-
-  return lastTurnComplete ?? lastModelComplete ?? lastResponseText;
-}
-
-/**
- * Last assistant message from a readback-style `messages` array
- * (`role` / `parts[{type:'text', text}]`). Also accepts `role: 'agent'`.
- */
-function messageRole(message: Record<string, unknown>): string | undefined {
-  if (typeof message['role'] === 'string') return message['role'];
-  const info = message['info'];
-  if (typeof info === 'object' && info !== null) {
-    const role = (info as Record<string, unknown>)['role'];
-    if (typeof role === 'string') return role;
-  }
-  return undefined;
-}
-
-function extractFromMessages(messages: readonly unknown[]): string | null {
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const message = messages[i];
-    if (typeof message !== 'object' || message === null) continue;
-    const obj = message as Record<string, unknown>;
-    const role = messageRole(obj);
-    // Only assistant/agent turns — never harvest the user prompt as "last turn".
-    if (role !== 'assistant' && role !== 'agent') continue;
-
-    const parts = obj['parts'];
-    if (Array.isArray(parts)) {
-      const chunks: string[] = [];
-      for (const part of parts) {
-        if (typeof part !== 'object' || part === null) continue;
-        const { type, text: partText } = part as { type?: unknown; text?: unknown };
-        if (type === 'text' && typeof partText === 'string' && partText.length > 0) {
-          chunks.push(partText);
-        }
-      }
-      if (chunks.length > 0) return chunks.join('\n\n');
-    }
-
-    if (typeof obj['text'] === 'string' && obj['text'].length > 0) return obj['text'];
-    if (typeof obj['content'] === 'string' && obj['content'].length > 0) return obj['content'];
-  }
-  return null;
+  return lastAssistantText(parseTranscriptDocument(input));
 }
 
 function textFromFinalText(finalText: FinalText | undefined): string | null {
@@ -283,8 +143,8 @@ export function harvestTask(
 
   if (transcriptPath !== null) {
     try {
-      const body = readFileSync(transcriptPath, 'utf8');
-      const extracted = extractLastAssistantMessage(body);
+      const document = readTranscriptDocument(transcriptPath, readTaskMeta(taskId)?.adapter);
+      const extracted = document ? lastAssistantText(document) : null;
       if (extracted !== null && extracted.length > 0) {
         rawText = extracted;
         source = 'transcript';

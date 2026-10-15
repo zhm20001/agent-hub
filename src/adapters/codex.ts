@@ -1,3 +1,4 @@
+import { parseCodexTranscript } from './transcript-format.ts';
 import { accessSync, constants, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
@@ -101,6 +102,7 @@ export function mapModeToSandbox(mode: string | undefined): {
 }
 
 export class CodexAdapter implements WorkerAdapter {
+  readonly parseTranscript = parseCodexTranscript;
   readonly name = 'codex';
   readonly description = 'OpenAI Codex CLI (exec --json) with sandbox modes and resume';
 
