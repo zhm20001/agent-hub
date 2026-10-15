@@ -10,6 +10,7 @@ import type { WorkerAdapter } from '../adapters/base.ts';
 import type { FinalText, PreconditionUnmet, SessionRef, TranscriptRef } from '../adapters/contract.ts';
 import { ZCodeAdapter } from '../adapters/zcode.ts';
 import { BashAdapter } from '../adapters/bash.ts';
+import { CodexAdapter } from '../adapters/codex.ts';
 import { PreconditionUnmetError } from '../adapters/preconditions.ts';
 import {
   RUN_RECORD_FILE,
@@ -197,6 +198,9 @@ export function readResolution(taskId: string): RunRecord | null {
 export function getAdapter(name: string): WorkerAdapter {
   if (name === 'bash' || name === 'shell') {
     return new BashAdapter();
+  }
+  if (name === 'codex') {
+    return new CodexAdapter();
   }
   return new ZCodeAdapter();
 }

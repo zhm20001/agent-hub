@@ -90,4 +90,4 @@ res.setHeader('Connection', 'keep-alive');
 通过统一的 `WorkerAdapter` 接口，系统具备极强的扩展性：
 - `ZCodeAdapter`: 适配百亿/千亿级代码模型的 ZCode CLI，支持 `--resume <sessionId>` 连续轮次以及 `--mode <mode>` 权限管控。
 - `BashAdapter`: 适配标准 POSIX Shell，便于执行单元测试套件、构建指令和系统探针。
-- 后续可零成本扩展 `CodexAdapter`、`ClaudeCodeAdapter` 等。
+- `CodexAdapter`: OpenAI Codex CLI（`exec --json`），支持 sandbox 映射与 `resume`；后续可扩展 `ClaudeCodeAdapter` 等。
