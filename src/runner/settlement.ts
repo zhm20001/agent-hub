@@ -15,7 +15,7 @@
  * @module
  */
 
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type {
   AdapterRawOutput,
@@ -24,7 +24,8 @@ import type {
   Resolution,
   RunObservation,
 } from '../adapters/contract.ts';
-import type { TaskStatus } from './detached.ts';
+import type { TaskStatus } from './task-types.ts';
+import { atomicWrite, withFileLock } from './file-storage.ts';
 
 /** File name of the persisted {@link RunRecord} inside a task directory. */
 export const RUN_RECORD_FILE = 'resolution.json';
@@ -137,10 +138,14 @@ export function fallbackTranslation(raw: AdapterRawOutput): AdapterTranslation {
 /** Persist one record atomically inside the task directory. */
 export function writeRunRecord(taskDir: string, record: RunRecord): void {
   const target = join(taskDir, RUN_RECORD_FILE);
-  // Unique tmp avoids ENOENT races when harvest repair + settle write concurrently.
-  const temporary = `${target}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(record, null, 2)}\n`, 'utf8');
-  renameSync(temporary, target);
+  withFileLock(join(taskDir, '.record.lock'), () => {
+    const existing = readRunRecord(taskDir);
+    const merged: RunRecord = existing ? {
+      ...existing, ...record,
+      resolution: { ...existing.resolution, ...record.resolution },
+    } : record;
+    atomicWrite(target, `${JSON.stringify(merged, null, 2)}\n`);
+  });
 }
 
 /** Read the persisted record, or `null` when this run has not been settled yet. */

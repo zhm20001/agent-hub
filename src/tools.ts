@@ -1,13 +1,10 @@
-import { readdirSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { defaultTaskStore } from './runner/task-store.ts';
 import {
-  SWARM_RUNS_DIR,
   ensureRunsDir,
   spawnDetachedTask,
   readTaskMeta,
   readResolution,
   terminateTask,
-  type TaskMeta,
 } from './runner/detached.ts';
 import { resolveDefaultTimeout } from './runner/timeout-policy.ts';
 import type { DshContext, DshAgent } from './types/dsh.ts';
@@ -124,14 +121,7 @@ export function registerSwarmTools(ctx?: DshContext, activeAgentGetter?: () => D
     parameters: {},
     async execute() {
       ensureRunsDir();
-      if (!existsSync(SWARM_RUNS_DIR)) return [];
-      const entries = readdirSync(SWARM_RUNS_DIR, { withFileTypes: true });
-      const tasks: TaskMeta[] = [];
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
-        const meta = readTaskMeta(entry.name);
-        if (meta) tasks.push(meta);
-      }
+      const tasks = defaultTaskStore.list();
       return tasks.sort((a, b) => b.startTime - a.startTime);
     },
   });

@@ -1,4 +1,5 @@
-import { readdirSync, existsSync, appendFileSync } from 'node:fs';
+import { defaultTaskStore } from './task-store.ts';
+import { existsSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   SWARM_RUNS_DIR,
@@ -42,14 +43,12 @@ export class TtlWatchdog {
     try {
       // Periodic: settle orphans before TTL decisions (dead PID ≠ timeout kill).
       reconcileOrphanRunningTasks();
-      const entries = readdirSync(SWARM_RUNS_DIR, { withFileTypes: true });
+      const tasks = defaultTaskStore.list();
       const now = Date.now();
 
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
-        const taskId = entry.name;
-        const meta = readTaskMeta(taskId);
-        if (!meta || meta.status !== 'RUNNING') continue;
+      for (const meta of tasks) {
+        const taskId = meta.taskId;
+        if (meta.status !== 'RUNNING') continue;
 
         const timeoutSec = meta.timeout || 7200;
         const elapsedMs = now - meta.startTime;

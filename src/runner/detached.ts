@@ -1,5 +1,5 @@
 import { spawn, execSync } from 'node:child_process';
-import { openSync, closeSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { openSync, closeSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { assertCwdAllowed } from './task-roots.ts';
 import { assertUnderConcurrentCap } from './concurrency.ts';
@@ -8,7 +8,7 @@ import { resolveDefaultTimeout } from './timeout-policy.ts';
 import { resolveModelInfo } from './model-info.ts';
 import type { WorkerAdapter } from '../adapters/base.ts';
 import type { FinalText, PreconditionUnmet, SessionRef, TranscriptRef } from '../adapters/contract.ts';
-import { getAdapter, adapterForSettlement, UnknownAdapterError, unknownAdapterStub } from '../adapters/registry.ts';
+import { getAdapter, adapterForSettlement, UnknownAdapterError } from '../adapters/registry.ts';
 export { getAdapter, adapterForSettlement, UnknownAdapterError, KNOWN_ADAPTERS } from '../adapters/registry.ts';
 import { PreconditionUnmetError } from '../adapters/preconditions.ts';
 import {
@@ -20,44 +20,10 @@ import {
   type RunRecord,
 } from './settlement.ts';
 
-export type TaskStatus = 'RUNNING' | 'COMPLETED' | 'FAILED' | 'KILLED' | 'TIMEOUT_KILLED';
-
-export interface TaskMeta {
-  taskId: string;
-  ticket?: string;
-  label: string;
-  prompt: string;
-  pid?: number;
-  status: TaskStatus;
-  startTime: number;
-  endTime?: number;
-  timeout: number; // in seconds
-  adapter: string;
-  cwd: string;
-  exitCode?: number | null;
-  error?: string;
-  /** One-shot TTL extension already granted by the progress probe. */
-  timeoutExtended?: boolean;
-  /** Best-effort model id from ZCode model-io / result (board card). */
-  modelId?: string;
-  /** Best-effort provider id from ZCode model-io / result (board card). */
-  providerId?: string;
-  /**
-   * Adapter-owned session handle when known from output or transcript discovery.
-   */
-  sessionId?: string;
-  /**
-   * Undeclared-satisfiable preconditions the engine found unmet before dispatch,
-   * by neutral name. Mirror of `RunObservation.unmetPreconditions` for readers
-   * of `meta.json` (the authoritative pair lives in `resolution.json`).
-   */
-  unmetPreconditions?: string[];
-  /**
-   * Soft-archive: hide from the default board UI without deleting `.swarm-runs`.
-   * Persist so restart keeps archived tasks hidden.
-   */
-  archived?: boolean;
-}
+import { defaultTaskStore } from './task-store.ts';
+import { atomicWrite } from './file-storage.ts';
+import type { TaskMeta, TaskStatus } from './task-types.ts';
+export type { TaskMeta, TaskStatus } from './task-types.ts';
 
 /** Board list filter — archived tasks stay on disk but leave the default roster. */
 export function filterBoardTasks<T extends { archived?: boolean }>(
@@ -68,17 +34,9 @@ export function filterBoardTasks<T extends { archived?: boolean }>(
   return tasks.filter((t) => !t.archived);
 }
 
-export const SWARM_RUNS_DIR = resolve(process.cwd(), '.swarm-runs');
-
-export function getTaskDir(taskId: string): string {
-  return join(SWARM_RUNS_DIR, taskId);
-}
-
-export function ensureRunsDir(): void {
-  if (!existsSync(SWARM_RUNS_DIR)) {
-    mkdirSync(SWARM_RUNS_DIR, { recursive: true });
-  }
-}
+export const SWARM_RUNS_DIR = defaultTaskStore.runsDir;
+export const getTaskDir = (id: string): string => defaultTaskStore.dir(id);
+export const ensureRunsDir = (): void => defaultTaskStore.ensure();
 
 /**
  * The process's own output: `raw.log` minus the header this runner prepended.
@@ -255,7 +213,7 @@ export function terminateTask(taskId: string, cause: 'cancelled' | 'timeout'): T
 /**
  * Spawns a detached background subagent task redirecting stdio to raw.log.
  */
-export function spawnDetachedTask(options: {
+export interface DispatchOptions {
   taskId?: string;
   ticket?: string;
   label?: string;
@@ -266,7 +224,13 @@ export function spawnDetachedTask(options: {
   disallowedTools?: string[];
   resumeSessionId?: string;
   timeout?: number;
-}): TaskMeta {
+}
+
+export function spawnDetachedTask(options: DispatchOptions): TaskMeta {
+  return defaultTaskStore.withDispatchLock(() => spawnTask(options));
+}
+
+function spawnTask(options: DispatchOptions): TaskMeta {
   const taskCwd = resolve(options.cwd || process.cwd());
   // Platform cwd whitelist — refuse before any task dir / process is created.
   assertCwdAllowed(taskCwd);
@@ -277,10 +241,9 @@ export function spawnDetachedTask(options: {
 
   const taskId = options.taskId || `task-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   const taskDir = getTaskDir(taskId);
-  mkdirSync(taskDir, { recursive: true });
+  defaultTaskStore.reserve(taskId);
 
   const rawLogPath = join(taskDir, 'raw.log');
-  const metaPath = join(taskDir, 'meta.json');
   const adapterName = options.adapter || 'zcode';
   const timeout = options.timeout || resolveDefaultTimeout(); // default 7200s or AGENT_HUB_DEFAULT_TIMEOUT
 
@@ -307,7 +270,7 @@ export function spawnDetachedTask(options: {
       error: reason,
       ...unmet.length === 0 ? {} : { unmetPreconditions: unmet.map(({ name }) => name) },
     };
-    writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+    defaultTaskStore.writeInitial(meta);
     return completeTask(taskId, {
       status: 'FAILED', note: `Not started: ${reason}`,
     })!;
@@ -385,7 +348,7 @@ export function spawnDetachedTask(options: {
       : {}),
   };
 
-  writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+  defaultTaskStore.writeInitial(meta);
 
   // Node emits close after error too. Close the descriptor exactly once.
   let logClosed = false;
@@ -421,23 +384,8 @@ export function spawnDetachedTask(options: {
   return meta;
 }
 
-export function readTaskMeta(taskId: string): TaskMeta | null {
-  const metaPath = join(getTaskDir(taskId), 'meta.json');
-  if (!existsSync(metaPath)) return null;
-  try {
-    return JSON.parse(readFileSync(metaPath, 'utf8'));
-  } catch {
-    return null;
-  }
-}
-
-export function updateTaskMeta(taskId: string, partial: Partial<TaskMeta>): TaskMeta | null {
-  const current = readTaskMeta(taskId);
-  if (!current) return null;
-  const updated = { ...current, ...partial };
-  writeFileSync(join(getTaskDir(taskId), 'meta.json'), JSON.stringify(updated, null, 2));
-  return updated;
-}
+export const readTaskMeta = (id: string): TaskMeta | null => defaultTaskStore.read(id);
+export const updateTaskMeta = (id: string, patch: Partial<TaskMeta>): TaskMeta | null => defaultTaskStore.update(id, patch);
 
 export function generateReport(taskId: string, meta: TaskMeta, extraNote?: string): void {
   const reportPath = join(getTaskDir(taskId), 'report.md');
@@ -477,7 +425,7 @@ ${logSnippet || '(No log output)'}
 \`\`\`
 `;
 
-  writeFileSync(reportPath, report, 'utf8');
+  atomicWrite(reportPath, report);
 }
 
 /**

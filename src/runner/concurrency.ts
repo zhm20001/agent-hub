@@ -7,7 +7,7 @@
  *
  * @module
  */
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { TaskStore } from './task-store.ts';
 import { join, resolve } from 'node:path';
 
 /** Env var: max concurrent RUNNING tasks (default {@link DEFAULT_MAX_CONCURRENT}). */
@@ -53,26 +53,7 @@ export function resolveMaxConcurrent(env: NodeJS.ProcessEnv = process.env): numb
  * Unreadable / missing meta entries are skipped (not counted).
  */
 export function countRunningTasks(runsDir: string = defaultRunsDir()): number {
-  if (!existsSync(runsDir)) return 0;
-  let count = 0;
-  let entries;
-  try {
-    entries = readdirSync(runsDir, { withFileTypes: true });
-  } catch {
-    return 0;
-  }
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const metaPath = join(runsDir, entry.name, 'meta.json');
-    if (!existsSync(metaPath)) continue;
-    try {
-      const meta = JSON.parse(readFileSync(metaPath, 'utf8')) as { status?: string };
-      if (meta.status === 'RUNNING') count += 1;
-    } catch {
-      // skip corrupt meta
-    }
-  }
-  return count;
+  return new TaskStore(runsDir).list().filter(task => task.status === 'RUNNING').length;
 }
 
 /**

@@ -1,8 +1,9 @@
+import { defaultTaskStore } from './runner/task-store.ts';
 import express, { type Request, type Response } from 'express';
 import cors from 'cors';
 import { createServer as createHttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { readdirSync, existsSync, readFileSync, statSync, createReadStream } from 'node:fs';
+import { existsSync, readFileSync, statSync, createReadStream } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { exec, execSync } from 'node:child_process';
 import {
@@ -44,15 +45,9 @@ function createApp() {
       reconcileOrphanRunningTasks();
       const includeArchived =
         req.query.includeArchived === '1' || req.query.includeArchived === 'true';
-      const entries = readdirSync(SWARM_RUNS_DIR, { withFileTypes: true });
-      const tasks: Array<TaskMeta & { closingRecord: ReturnType<typeof readResolution> }> = [];
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
-        const meta = readTaskMeta(entry.name);
-        if (meta) {
-          tasks.push({ ...meta, closingRecord: readResolution(entry.name) });
-        }
-      }
+      const tasks = defaultTaskStore.list().map(meta => ({
+        ...meta, closingRecord: readResolution(meta.taskId),
+      }));
       const visible = filterBoardTasks(tasks, { includeArchived });
       visible.sort((a, b) => b.startTime - a.startTime);
       res.json(visible);
