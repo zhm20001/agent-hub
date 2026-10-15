@@ -27,11 +27,11 @@ export class SwarmRunsWatcher {
     this.watcher.on('change', (filePath) => this.handleFileChange(filePath));
   }
 
-  stop(): void {
-    if (this.watcher) {
-      this.watcher.close();
-      this.watcher = null;
-    }
+  async stop(): Promise<void> {
+    const watcher = this.watcher;
+    this.watcher = null;
+    this.knownStatus.clear();
+    await watcher?.close();
   }
 
   subscribe(callback: TaskCompletionCallback): () => void {
@@ -69,5 +69,3 @@ export class SwarmRunsWatcher {
     } catch {}
   }
 }
-
-export const defaultWatcher = new SwarmRunsWatcher();

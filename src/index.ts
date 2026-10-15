@@ -6,24 +6,25 @@
 
 import type { DshContext, DshAgent } from './types/dsh.ts';
 import { registerSwarmTools } from './tools.ts';
-import { defaultWatcher } from './watcher.ts';
-import { startServer } from './server.ts';
+import { startServer, type RunningServer, type ServerOptions } from './server.ts';
 
 export const name = 'subagent-swarm';
 export const inject = ['tools'];
 
-let activeServer: any = null;
+let activeRun: Promise<RunningServer> | null = null;
+let cleanup: Promise<void> = Promise.resolve();
 let currentAgent: DshAgent | undefined = undefined;
 
 /**
  * DSH Plugin apply hook.
  */
-export function apply(ctx: DshContext, _config?: any): void {
+export function apply(ctx: DshContext, config: ServerOptions & { port?: number } = {}): void {
+  if (activeRun) return;
   // Register tools on ctx.tools
   registerSwarmTools(ctx, () => currentAgent);
 
   // When a task finishes in .swarm-runs/, notify active DSH agent if present
-  defaultWatcher.subscribe((meta, report) => {
+  const onCompletion: NonNullable<ServerOptions['onCompletion']> = (meta, report) => {
     if (currentAgent && currentAgent.inject) {
       try {
         currentAgent.inject({
@@ -34,27 +35,28 @@ export function apply(ctx: DshContext, _config?: any): void {
         ctx.logger?.warn?.('[Swarm] Failed to inject completion notice to agent:', err);
       }
     }
-  });
+  };
 
   // Start HTTP / SSE Web workspace
-  startServer(3000).then((server) => {
-    activeServer = server;
-  }).catch((err) => {
+  const starting = cleanup.then(() => startServer(config.port ?? 3000, { ...config, onCompletion }));
+  activeRun = starting;
+  void starting.catch((err) => {
+    if (activeRun === starting) activeRun = null;
     ctx.logger?.error?.('[Swarm] Failed to start web server:', err);
   });
 }
 
-/**
- * Dispose hook for DSH microkernel reloads.
- */
-export function dispose(): void {
-  if (activeServer) {
-    try {
-      activeServer.close();
-    } catch {}
-    activeServer = null;
+/** Await startup, then release its resources; a reload waits for this cleanup. */
+export function dispose(): Promise<void> {
+  const starting = activeRun;
+  activeRun = null;
+  if (starting) {
+    const closing = starting.then(run => run.close(), () => {});
+    // Keep reload possible even if cleanup failed; return the failure to the host.
+    cleanup = closing.catch(() => {});
+    return closing;
   }
-  defaultWatcher.stop();
+  return cleanup;
 }
 
 export default { name, apply, dispose };

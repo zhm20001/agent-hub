@@ -26,10 +26,10 @@
   ],
   "license": "MIT",
   "scripts": {
-    "dev": "tsx src/server.ts",
+    "dev": "tsx src/cli.ts",
     "build": "vite build",
-    "start": "tsx src/server.ts",
-    "test": "node --import tsx --test --test-concurrency=1 tests/faced-dispatch.spec.ts tests/faced-codex.spec.ts tests/faced-close-the-loop.spec.ts tests/harvest.spec.ts tests/task-roots.spec.ts tests/concurrency-and-transcript.spec.ts tests/dispatch-tickets.spec.ts tests/board-ux.spec.ts tests/timeout-policy.spec.ts tests/reconcile.spec.ts tests/archive.spec.ts tests/lifecycle.spec.ts",
+    "start": "tsx src/cli.ts",
+    "test": "node --import tsx --test --test-concurrency=1 tests/faced-dispatch.spec.ts tests/faced-codex.spec.ts tests/faced-close-the-loop.spec.ts tests/harvest.spec.ts tests/task-roots.spec.ts tests/concurrency-and-transcript.spec.ts tests/dispatch-tickets.spec.ts tests/board-ux.spec.ts tests/timeout-policy.spec.ts tests/reconcile.spec.ts tests/archive.spec.ts tests/lifecycle.spec.ts tests/server-lifecycle.spec.ts",
     "transcript": "node --import tsx src/runner/read-transcript.ts",
     "restart": "bash scripts/restart-board.sh",
     "dispatch-tickets": "node scripts/dispatch-tickets.mjs"
