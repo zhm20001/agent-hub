@@ -19,7 +19,12 @@ import {
   resolveCodexCliPath,
 } from '../src/adapters/codex.ts';
 import { PreconditionUnmetError } from '../src/adapters/preconditions.ts';
-import { getAdapter, getTaskDir, spawnDetachedTask } from '../src/runner/detached.ts';
+import {
+  UnknownAdapterError,
+  getAdapter,
+  getTaskDir,
+  spawnDetachedTask,
+} from '../src/runner/detached.ts';
 import { readRunRecord, type RunRecord } from '../src/runner/settlement.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -94,11 +99,12 @@ describe('codex · resolveCodexCliPath', () => {
   it('accepts an explicit path and rejects a missing one', () => {
     const cli = join(scratch(), 'explicit-codex');
     writeFileSync(cli, '#!/bin/sh\n');
+    chmodSync(cli, 0o755);
     assert.equal(resolveCodexCliPath(cli).ok, true);
     const missing = resolveCodexCliPath(join(scratch(), 'nope'));
     assert.equal(missing.ok, false);
     if (missing.ok) return;
-    assert.match(missing.reason, /not a readable file/);
+    assert.match(missing.reason, /not a usable executable/);
   });
 
   it('fails loud when nothing resolves', () => {
@@ -112,7 +118,7 @@ describe('codex · resolveCodexCliPath', () => {
       resolveCodexCliPath());
     assert.equal(blocked.ok, false);
     if (blocked.ok) return;
-    assert.match(blocked.reason, /CODEX_CLI_PATH is set but not a readable file/);
+    assert.match(blocked.reason, /CODEX_CLI_PATH is set but not a usable executable/);
   });
 });
 
@@ -155,7 +161,7 @@ describe('codex · buildCommand', () => {
     assert.notEqual(built.args[promptAt - 1], '-p');
   });
 
-  it('builds resume as exec … resume --json <id> <prompt>', () => {
+  it('builds resume as exec … resume --json <id> -- <prompt>', () => {
     const adapter = new CodexAdapter(FIXTURE);
     const cwd = scratch();
     const built = adapter.buildCommand({
@@ -168,9 +174,22 @@ describe('codex · buildCommand', () => {
     assert.ok(resumeAt >= 0);
     assert.equal(built.args[resumeAt + 1], '--json');
     assert.equal(built.args[resumeAt + 2], THREAD);
-    assert.equal(built.args[resumeAt + 3], 'continue');
+    assert.equal(built.args[resumeAt + 3], '--');
+    assert.equal(built.args[resumeAt + 4], 'continue');
     assert.ok(built.args.includes('read-only'));
     assert.equal(built.args.includes('-p'), false);
+  });
+
+  it('keeps a leading-dash resume prompt after --', () => {
+    const adapter = new CodexAdapter(FIXTURE);
+    const built = adapter.buildCommand({
+      prompt: '--help-looking',
+      cwd: scratch(),
+      resumeSessionId: THREAD,
+    });
+    const dashAt = built.args.indexOf('--');
+    assert.ok(dashAt >= 0);
+    assert.equal(built.args[dashAt + 1], '--help-looking');
   });
 
   it('adds dangerously-bypass for yolo', () => {
@@ -311,6 +330,15 @@ describe('codex · preconditions', () => {
   it('getAdapter("codex") returns CodexAdapter', () => {
     assert.equal(getAdapter('codex').name, 'codex');
   });
+
+  it('getAdapter rejects unknown names (no silent ZCode fallback)', () => {
+    assert.throws(() => getAdapter('Codex'), (error: unknown) => {
+      assert.ok(error instanceof UnknownAdapterError);
+      assert.equal((error as UnknownAdapterError).adapterName, 'Codex');
+      return true;
+    });
+    assert.throws(() => getAdapter('unknown-bot'), UnknownAdapterError);
+  });
 });
 
 describe('codex · spawnDetachedTask with fixture', () => {
@@ -338,5 +366,19 @@ describe('codex · spawnDetachedTask with fixture', () => {
     assert.deepEqual(record.resolution.sessionRef, { provenance: 'codex', handle: THREAD });
     assert.equal(record.resolution.stopCause, undefined);
     assert.equal(record.observation.producedOutput, true);
+  });
+
+  it('refuses unknown adapter names without spawning', () => {
+    const cwd = scratch();
+    const meta = withEnv(
+      {
+        AGENT_HUB_TASK_ROOTS: cwd,
+        AGENT_HUB_MAX_CONCURRENT: '50',
+      },
+      () => dispatch({ prompt: 'nope', cwd, adapter: 'Codex', timeout: 30 }),
+    );
+    assert.equal(meta.status, 'FAILED');
+    assert.equal(meta.pid, undefined);
+    assert.match(meta.error ?? '', /unknown adapter: Codex/);
   });
 });

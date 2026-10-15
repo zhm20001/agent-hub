@@ -18,7 +18,7 @@ import {
   SWARM_RUNS_DIR,
   extractProcessOutput,
   generateReport,
-  getAdapter,
+  adapterForSettlement,
   getTaskDir,
   readTaskMeta,
   settleTask,
@@ -72,7 +72,7 @@ export function reconcileOrphanTask(taskId: string): TaskMeta | null {
     const started = existsSync(rawLogPath);
     settleTask(taskId, {
       status: 'COMPLETED',
-      adapter: getAdapter(meta.adapter),
+      adapter: adapterForSettlement(meta.adapter),
       ...started
         ? { output: extractProcessOutput(readFileSync(rawLogPath, 'utf8')) }
         : {},

@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { accessSync, constants, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 import type { WorkerAdapter, AdapterCommandSpec, AdapterCommandResult } from './base.ts';
@@ -15,6 +15,23 @@ export const AUTH_FILE_PRECONDITION = 'auth-file';
 export const CHATGPT_CODEX_CLI_PATH =
   '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex';
 
+/**
+ * Whether `path` looks usable as a CLI entry: exists, and is executable (or a
+ * readable `.js`/`.cjs` that we launch via `node`). Auth stays existence-only.
+ */
+function isUsableCliPath(path: string): boolean {
+  if (!existsSync(path)) return false;
+  const mode = path.endsWith('.cjs') || path.endsWith('.js')
+    ? constants.R_OK
+    : constants.X_OK;
+  try {
+    accessSync(path, mode);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const KNOWN_SANDBOXES = new Set(['read-only', 'workspace-write', 'danger-full-access']);
 
 /**
@@ -24,21 +41,21 @@ const KNOWN_SANDBOXES = new Set(['read-only', 'workspace-write', 'danger-full-ac
  */
 export function resolveCodexCliPath(explicit?: string): { ok: true; path: string } | { ok: false; reason: string } {
   if (explicit !== undefined && explicit.length > 0) {
-    if (existsSync(explicit)) return { ok: true, path: resolve(explicit) };
+    if (isUsableCliPath(explicit)) return { ok: true, path: resolve(explicit) };
     return {
       ok: false,
-      reason: `declared Codex CLI path is not a readable file: ${explicit}`,
+      reason: `declared Codex CLI path is not a usable executable (or readable .js/.cjs): ${explicit}`,
     };
   }
   const fromEnv = process.env.CODEX_CLI_PATH;
   if (fromEnv !== undefined && fromEnv.length > 0) {
-    if (existsSync(fromEnv)) return { ok: true, path: resolve(fromEnv) };
+    if (isUsableCliPath(fromEnv)) return { ok: true, path: resolve(fromEnv) };
     return {
       ok: false,
-      reason: `CODEX_CLI_PATH is set but not a readable file: ${fromEnv}`,
+      reason: `CODEX_CLI_PATH is set but not a usable executable (or readable .js/.cjs): ${fromEnv}`,
     };
   }
-  if (existsSync(CHATGPT_CODEX_CLI_PATH)) {
+  if (isUsableCliPath(CHATGPT_CODEX_CLI_PATH)) {
     return { ok: true, path: CHATGPT_CODEX_CLI_PATH };
   }
   const fromPath = findOnPath('codex');
@@ -107,6 +124,13 @@ export class CodexAdapter implements WorkerAdapter {
     if (this.cliPathError !== null) {
       throw new PreconditionUnmetError(CLI_PATH_PRECONDITION, this.cliPathError);
     }
+    // Recheck at dispatch time — binary may have been removed after construction.
+    if (!isUsableCliPath(this.cliPath)) {
+      throw new PreconditionUnmetError(
+        CLI_PATH_PRECONDITION,
+        `Codex CLI path is no longer usable: ${this.cliPath}`,
+      );
+    }
     const authPath = resolveCodexAuthPath();
     if (!existsSync(authPath)) {
       throw new PreconditionUnmetError(
@@ -134,9 +158,11 @@ export class CodexAdapter implements WorkerAdapter {
       args.push('--dangerously-bypass-approvals-and-sandbox');
     }
 
+    // `disallowedTools` is intentionally not forwarded: Codex has no clear
+    // `exec` CLI flag equivalent (tool allow/deny lives in config.toml).
     if (spec.resumeSessionId) {
-      // resume: `codex exec … resume --json <id> <prompt>`
-      args.push('resume', '--json', spec.resumeSessionId, spec.prompt);
+      // resume: `codex exec … resume --json <id> -- <prompt>` (same `--` as fresh)
+      args.push('resume', '--json', spec.resumeSessionId, '--', spec.prompt);
     } else {
       // fresh: `codex exec --json -C … -s … --skip-git-repo-check [--] <prompt>`
       args.push('--json', '--', spec.prompt);
@@ -294,7 +320,7 @@ function findOnPath(name: string): string | null {
   for (const dir of pathEnv.split(delimiter)) {
     if (dir.length === 0) continue;
     const candidate = join(dir, name);
-    if (existsSync(candidate)) return candidate;
+    if (isUsableCliPath(candidate)) return candidate;
   }
   return null;
 }

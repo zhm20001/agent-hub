@@ -174,7 +174,7 @@ function materializeRunRecord(taskId: string): RunRecord | null {
   const started = existsSync(rawLogPath);
   return settleTask(taskId, {
     status: meta.status,
-    adapter: getAdapter(meta.adapter),
+    adapter: adapterForSettlement(meta.adapter),
     ...started ? { output: extractProcessOutput(readFileSync(rawLogPath, 'utf8')) } : {},
     exitCode: meta.exitCode ?? null,
     unmetPreconditions: (meta.unmetPreconditions ?? []).map((name) => ({ name })),
@@ -195,6 +195,36 @@ export function readResolution(taskId: string): RunRecord | null {
   return materializeRunRecord(taskId);
 }
 
+/** Known adapter names accepted by {@link getAdapter}. `shell` aliases `bash`. */
+export const KNOWN_ADAPTERS = ['zcode', 'bash', 'codex'] as const;
+
+/** Raised when dispatch/meta names an adapter that is not registered. */
+export class UnknownAdapterError extends Error {
+  readonly adapterName: string;
+
+  constructor(adapterName: string) {
+    super(
+      `unknown adapter: ${adapterName} `
+        + `(known: ${KNOWN_ADAPTERS.join(', ')}; shell is an alias of bash)`,
+    );
+    this.name = 'UnknownAdapterError';
+    this.adapterName = adapterName;
+  }
+}
+
+/** Settlement stub for historical metas with a typo'd adapter — no translate(). */
+function unknownAdapterStub(name: string): WorkerAdapter {
+  return {
+    name,
+    description: `unknown adapter (${name})`,
+    buildCommand: () => ({ cmd: 'false', args: [] }),
+  };
+}
+
+/**
+ * Resolve a registered worker adapter. Unknown names fail loud — never fall
+ * back to ZCode (a typo like `Codex` must not launch the wrong backend).
+ */
 export function getAdapter(name: string): WorkerAdapter {
   if (name === 'bash' || name === 'shell') {
     return new BashAdapter();
@@ -202,7 +232,20 @@ export function getAdapter(name: string): WorkerAdapter {
   if (name === 'codex') {
     return new CodexAdapter();
   }
-  return new ZCodeAdapter();
+  if (name === 'zcode') {
+    return new ZCodeAdapter();
+  }
+  throw new UnknownAdapterError(name);
+}
+
+/** Like {@link getAdapter}, but soft for reconcile/materialize of old metas. */
+export function adapterForSettlement(name: string): WorkerAdapter {
+  try {
+    return getAdapter(name);
+  } catch (err) {
+    if (err instanceof UnknownAdapterError) return unknownAdapterStub(name);
+    throw err;
+  }
 }
 
 /**
@@ -235,7 +278,6 @@ export function spawnDetachedTask(options: {
   const rawLogPath = join(taskDir, 'raw.log');
   const metaPath = join(taskDir, 'meta.json');
   const adapterName = options.adapter || 'zcode';
-  const adapter = getAdapter(adapterName);
   const timeout = options.timeout || resolveDefaultTimeout(); // default 7200s or AGENT_HUB_DEFAULT_TIMEOUT
 
   /**
@@ -243,7 +285,11 @@ export function spawnDetachedTask(options: {
    * precondition is not a task that ran and failed: nothing was spawned, so
    * there is no output, no pid, and no log to read.
    */
-  const refuseToStart = (reason: string, unmet: readonly PreconditionUnmet[] = []): TaskMeta => {
+  const refuseToStart = (
+    reason: string,
+    settleAdapter: WorkerAdapter,
+    unmet: readonly PreconditionUnmet[] = [],
+  ): TaskMeta => {
     const meta: TaskMeta = {
       taskId,
       ticket: options.ticket,
@@ -259,10 +305,20 @@ export function spawnDetachedTask(options: {
       ...unmet.length === 0 ? {} : { unmetPreconditions: unmet.map(({ name }) => name) },
     };
     writeFileSync(metaPath, JSON.stringify(meta, null, 2));
-    settleTask(taskId, { status: 'FAILED', adapter, unmetPreconditions: unmet });
+    settleTask(taskId, { status: 'FAILED', adapter: settleAdapter, unmetPreconditions: unmet });
     generateReport(taskId, meta, `Not started: ${reason}`);
     return meta;
   };
+
+  let adapter: WorkerAdapter;
+  try {
+    adapter = getAdapter(adapterName);
+  } catch (err) {
+    if (err instanceof UnknownAdapterError) {
+      return refuseToStart(err.message, unknownAdapterStub(adapterName));
+    }
+    throw err;
+  }
 
   // The adapter declares; the engine checks — every dispatch, never cached.
   // Only the engine holds the environment and workspace this dispatch will
@@ -271,7 +327,7 @@ export function spawnDetachedTask(options: {
     adapter.checkPreconditions?.();
   } catch (err: any) {
     if (err instanceof PreconditionUnmetError) {
-      return refuseToStart(err.message, [{ name: err.precondition }]);
+      return refuseToStart(err.message, adapter, [{ name: err.precondition }]);
     }
     throw err;
   }
@@ -305,7 +361,7 @@ export function spawnDetachedTask(options: {
     });
   } catch (err: any) {
     closeSync(logFd);
-    return refuseToStart(`Failed to spawn: ${err.message}`);
+    return refuseToStart(`Failed to spawn: ${err.message}`, adapter);
   }
 
   const pid = child.pid;

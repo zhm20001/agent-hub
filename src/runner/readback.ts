@@ -80,6 +80,9 @@ export async function readTranscript(
   ref: TranscriptRef,
   options: ReadTranscriptOptions = {},
 ): Promise<TranscriptReadback | undefined> {
+  // Codex emits transcriptRef (thread uuid) at settle time, but Hub has no
+  // cheap Codex session readback route yet — unsupported provenances return
+  // undefined (contract: 取不到即缺省), never a fake empty transcript.
   if (ref.provenance !== 'zcode') return undefined;
   return readZcodeTranscript(ref, options);
 }
