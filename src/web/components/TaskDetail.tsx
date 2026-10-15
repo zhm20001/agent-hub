@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Terminal, FileCheck, GitBranch, Code2, Ban, RefreshCw, Folder, MessagesSquare } from 'lucide-react';
+import { Terminal, FileCheck, GitBranch, Code2, Ban, RefreshCw, Folder, MessagesSquare, Archive } from 'lucide-react';
 import type { Task, TaskDetailData } from '../types.ts';
 import { translations, type Language } from '../i18n.ts';
 import { TerminalView } from './TerminalView.tsx';
@@ -10,6 +10,8 @@ import { ConversationView } from './ConversationView.tsx';
 interface TaskDetailProps {
   task: Task;
   onRefresh: () => void;
+  /** Soft-archive: hide from board without deleting runs. */
+  onArchive?: (taskId: string) => void;
   lang: Language;
 }
 
@@ -18,7 +20,7 @@ type TabType = 'report' | 'conversation' | 'json' | 'terminal' | 'vcs';
 
 const TABS: TabType[] = ['report', 'conversation', 'json', 'terminal', 'vcs'];
 
-export const TaskDetail: React.FC<TaskDetailProps> = ({ task, onRefresh, lang }) => {
+export const TaskDetail: React.FC<TaskDetailProps> = ({ task, onRefresh, onArchive, lang }) => {
   const t = translations[lang];
   const [activeTab, setActiveTab] = useState<TabType>('report');
   const [detailData, setDetailData] = useState<TaskDetailData | null>(null);
@@ -122,6 +124,18 @@ export const TaskDetail: React.FC<TaskDetailProps> = ({ task, onRefresh, lang })
               <span>{isKilling ? t.killing : t.killProcess}</span>
             </button>
           )}
+
+          {onArchive ? (
+            <button
+              type="button"
+              onClick={() => onArchive(currentTask.taskId)}
+              title={t.archiveTaskTitle}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-sm bg-surface-muted hover:bg-line-strong text-ink-secondary hover:text-ink border border-line text-xs font-medium transition-colors"
+            >
+              <Archive className="h-3.5 w-3.5" />
+              <span>{t.archiveTask}</span>
+            </button>
+          ) : null}
 
           <button
             onClick={() => {

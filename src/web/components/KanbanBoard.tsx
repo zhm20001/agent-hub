@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Clock } from 'lucide-react';
+import { Archive, Clock } from 'lucide-react';
 import type { Task } from '../types.ts';
 import { translations, type Language } from '../i18n.ts';
 import { formatDuration, formatShanghaiAbsolute } from '../lib/board-ux.ts';
@@ -12,6 +12,8 @@ interface KanbanBoardProps {
   onHighlightTask: (taskId: string) => void;
   /** Click / Enter — open Master–Detail. */
   onOpenTask: (taskId: string) => void;
+  /** Soft-archive: hide from default board without deleting runs. */
+  onArchiveTask?: (taskId: string) => void;
   lang: Language;
 }
 
@@ -22,6 +24,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
   selectedTaskId,
   onHighlightTask,
   onOpenTask,
+  onArchiveTask,
   lang,
 }) => {
   const t = translations[lang];
@@ -179,11 +182,28 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
               {task.label || task.taskId}
             </h4>
           </div>
-          <span
-            className={`shrink-0 text-[10px] font-semibold uppercase tracking-wide ${ink}`}
-          >
-            {statusShortLabel(task.status, lang)}
-          </span>
+          <div className="flex items-center gap-1 shrink-0">
+            <span
+              className={`text-[10px] font-semibold uppercase tracking-wide ${ink}`}
+            >
+              {statusShortLabel(task.status, lang)}
+            </span>
+            {onArchiveTask ? (
+              <button
+                type="button"
+                title={t.archiveTaskTitle}
+                aria-label={t.archiveTask}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  onArchiveTask(task.taskId);
+                }}
+                className="opacity-0 group-hover:opacity-100 focus:opacity-100 p-0.5 rounded-sm text-ink-muted hover:text-ink hover:bg-surface-muted transition-opacity"
+              >
+                <Archive className="h-3 w-3" aria-hidden />
+              </button>
+            ) : null}
+          </div>
         </div>
 
         <p className="text-[11px] text-ink-secondary font-mono line-clamp-2 leading-snug mb-2">

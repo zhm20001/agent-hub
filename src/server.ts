@@ -16,6 +16,7 @@ import {
   generateReport,
   getTaskDir,
   type TaskMeta,
+  filterBoardTasks,
 } from './runner/detached.ts';
 import { harvestTask, repairTimeoutTranscript, resolutionJsonPath } from './runner/harvest.ts';
 import { reconcileOrphanRunningTasks, reconcileOrphanTask } from './runner/reconcile.ts';
@@ -44,11 +45,13 @@ defaultWatcher.start();
 /**
  * GET /api/tasks - list all tasks
  */
-app.get('/api/tasks', (_req: Request, res: Response) => {
+app.get('/api/tasks', (req: Request, res: Response) => {
   ensureRunsDir();
   try {
     // Board load: settle RUNNING metas whose child PID is already gone.
     reconcileOrphanRunningTasks();
+    const includeArchived =
+      req.query.includeArchived === '1' || req.query.includeArchived === 'true';
     const entries = readdirSync(SWARM_RUNS_DIR, { withFileTypes: true });
     const tasks: Array<TaskMeta & { closingRecord: ReturnType<typeof readResolution> }> = [];
     for (const entry of entries) {
@@ -58,8 +61,9 @@ app.get('/api/tasks', (_req: Request, res: Response) => {
         tasks.push({ ...meta, closingRecord: readResolution(entry.name) });
       }
     }
-    tasks.sort((a, b) => b.startTime - a.startTime);
-    res.json(tasks);
+    const visible = filterBoardTasks(tasks, { includeArchived });
+    visible.sort((a, b) => b.startTime - a.startTime);
+    res.json(visible);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -192,6 +196,25 @@ app.post('/api/tasks/:id/kill', (req: Request, res: Response) => {
     generateReport(id, updated, 'Terminated by operator via Web UI');
   }
 
+  res.json({ success: true, meta: updated });
+});
+
+/**
+ * POST /api/tasks/:id/archive — soft-archive (or unarchive) a task.
+ * Sets meta.archived; does not delete `.swarm-runs/<id>`.
+ * Body: { archived?: boolean } — default true.
+ */
+app.post('/api/tasks/:id/archive', (req: Request, res: Response) => {
+  const { id } = req.params;
+  const meta = readTaskMeta(id);
+  if (!meta) {
+    return res.status(404).json({ error: 'Task not found' });
+  }
+
+  const archived =
+    req.body && typeof req.body.archived === 'boolean' ? req.body.archived : true;
+
+  const updated = updateTaskMeta(id, { archived });
   res.json({ success: true, meta: updated });
 });
 

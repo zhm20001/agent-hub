@@ -54,6 +54,20 @@ export interface TaskMeta {
    * of `meta.json` (the authoritative pair lives in `resolution.json`).
    */
   unmetPreconditions?: string[];
+  /**
+   * Soft-archive: hide from the default board UI without deleting `.swarm-runs`.
+   * Persist so restart keeps archived tasks hidden.
+   */
+  archived?: boolean;
+}
+
+/** Board list filter — archived tasks stay on disk but leave the default roster. */
+export function filterBoardTasks<T extends { archived?: boolean }>(
+  tasks: T[],
+  opts: { includeArchived?: boolean } = {},
+): T[] {
+  if (opts.includeArchived) return tasks;
+  return tasks.filter((t) => !t.archived);
 }
 
 export const SWARM_RUNS_DIR = resolve(process.cwd(), '.swarm-runs');

@@ -84,6 +84,22 @@ export const App: React.FC = () => {
     setViewMode('timeline');
   };
 
+  /** Soft-archive: persist meta.archived and drop from default roster. */
+  const handleArchiveTask = async (taskId: string) => {
+    try {
+      const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/archive`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ archived: true }),
+      });
+      if (!res.ok) return;
+      if (selectedTaskId === taskId) setSelectedTaskId(null);
+      await fetchTasks();
+    } catch (err) {
+      console.error('Failed to archive task:', err);
+    }
+  };
+
   const selectedTask = tasks.find((task) => task.taskId === selectedTaskId) || null;
 
   return (
@@ -108,6 +124,7 @@ export const App: React.FC = () => {
             selectedTaskId={selectedTaskId}
             onHighlightTask={setSelectedTaskId}
             onOpenTask={handleSelectFromKanban}
+            onArchiveTask={handleArchiveTask}
             lang={lang}
           />
         </div>
@@ -123,7 +140,12 @@ export const App: React.FC = () => {
           }
           right={
             selectedTask ? (
-              <TaskDetail task={selectedTask} onRefresh={fetchTasks} lang={lang} />
+              <TaskDetail
+                task={selectedTask}
+                onRefresh={fetchTasks}
+                onArchive={handleArchiveTask}
+                lang={lang}
+              />
             ) : (
               <div className="h-full flex flex-col items-start justify-center p-8 bg-page">
                 <div className="h-10 w-10 rounded-sm bg-surface border border-line flex items-center justify-center text-accent-soft mb-4">

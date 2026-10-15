@@ -175,6 +175,8 @@ export const translations = {
     submitShortcutHint: 'Ctrl/⌘+Enter to dispatch from the prompt field. Esc closes.',
     kanbanKeysHint: '↑↓←→ select · Enter open',
     timelineKeysHint: '↑↓ select task',
+    archiveTask: 'Archive',
+    archiveTaskTitle: 'Archive — hide from board (keeps .swarm-runs)',
   },
   zh: {
     // Header
@@ -350,5 +352,7 @@ export const translations = {
     submitShortcutHint: '在指令框内 Ctrl/⌘+Enter 派发；Esc 关闭。',
     kanbanKeysHint: '↑↓←→ 选择 · Enter 打开',
     timelineKeysHint: '↑↓ 选择任务',
+    archiveTask: '归档',
+    archiveTaskTitle: '归档 — 从看板隐藏（保留 .swarm-runs）',
   },
 } as const;

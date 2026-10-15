@@ -35,6 +35,8 @@ export interface Task {
   modelId?: string;
   providerId?: string;
   closingRecord?: ClosingRecord | null;
+  /** Soft-archive: hidden from default board when true. */
+  archived?: boolean;
 }
 
 /** Mechanical last-turn harvest from the API — not a semantic verdict (ADR-0002). */
