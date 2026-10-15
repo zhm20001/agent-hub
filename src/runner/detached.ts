@@ -21,7 +21,7 @@ import {
 } from './settlement.ts';
 
 import { defaultTaskStore } from './task-store.ts';
-import { atomicWrite } from './file-storage.ts';
+import { atomicWrite, withFileLock } from './file-storage.ts';
 import type { TaskMeta, TaskStatus } from './task-types.ts';
 export type { TaskMeta, TaskStatus } from './task-types.ts';
 
@@ -159,6 +159,11 @@ export interface TaskCompletion {
  * Recovery preserves an existing record, while actual process output refreshes it.
  */
 export function completeTask(taskId: string, completion: TaskCompletion): TaskMeta | null {
+  if (!readTaskMeta(taskId)) return null;
+  return withFileLock(join(getTaskDir(taskId), '.completion.lock'), () => publishCompletion(taskId, completion));
+}
+
+function publishCompletion(taskId: string, completion: TaskCompletion): TaskMeta | null {
   const current = readTaskMeta(taskId);
   if (current === null) return null;
   const status = current.status === 'RUNNING' ? completion.status : current.status;
@@ -193,6 +198,10 @@ export function completeTask(taskId: string, completion: TaskCompletion): TaskMe
       : status === 'TIMEOUT_KILLED' ? 'Task exceeded execution TTL limit and was terminated by Watchdog'
       : completion.note ?? updated.error;
     generateReport(taskId, updated, note);
+    const publicationPath = join(getTaskDir(taskId), 'completion.json');
+    if (!existsSync(publicationPath)) {
+      atomicWrite(publicationPath, JSON.stringify({ taskId, publishedAt: Date.now() }));
+    }
   }
   return updated;
 }

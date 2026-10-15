@@ -585,7 +585,7 @@ export async function startServer(
       });
     });
     watchdog.start();
-    watcher.start();
+    await watcher.start();
     return { address: httpServer.address() as AddressInfo, close };
   } catch (error) {
     try { await close(); } catch (cleanupError) {

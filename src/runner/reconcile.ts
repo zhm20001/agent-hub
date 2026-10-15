@@ -12,7 +12,9 @@
  * @module
  */
 
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { defaultTaskStore } from './task-store.ts';
 import {
   SWARM_RUNS_DIR,
   readTaskMeta,
@@ -61,21 +63,17 @@ export function reconcileOrphanRunningTasks(
   const repaired: TaskMeta[] = [];
   if (!existsSync(runsDir)) return { repaired };
 
-  let entries;
-  try {
-    entries = readdirSync(runsDir, { withFileTypes: true });
-  } catch {
-    return { repaired };
-  }
-
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+  for (const meta of defaultTaskStore.list()) {
     try {
-      const fixed = reconcileOrphanTask(entry.name);
-      if (fixed !== null) repaired.push(fixed);
-    } catch {
-      // best-effort per task — never let one corrupt meta abort the scan
-    }
+      if (meta.status !== 'RUNNING') {
+        if (!existsSync(join(defaultTaskStore.dir(meta.taskId), 'completion.json'))) {
+          completeTask(meta.taskId, { status: meta.status });
+        }
+      } else {
+        const fixed = reconcileOrphanTask(meta.taskId);
+        if (fixed !== null) repaired.push(fixed);
+      }
+    } catch { /* A corrupt task must not stop recovery of other tasks. */ }
   }
   return { repaired };
 }
