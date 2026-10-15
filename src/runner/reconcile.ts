@@ -12,20 +12,13 @@
  * @module
  */
 
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readdirSync } from 'node:fs';
 import {
   SWARM_RUNS_DIR,
-  extractProcessOutput,
-  generateReport,
-  adapterForSettlement,
-  getTaskDir,
   readTaskMeta,
-  settleTask,
-  updateTaskMeta,
+  completeTask,
   type TaskMeta,
 } from './detached.ts';
-import { readRunRecord } from './settlement.ts';
 import { isProcessAlive } from './timeout-policy.ts';
 
 /** Note written into report.md when reconcile settles a missed close. */
@@ -54,34 +47,8 @@ export function reconcileOrphanTask(taskId: string): TaskMeta | null {
   const meta = readTaskMeta(taskId);
   if (meta === null || !isOrphanRunning(meta)) return null;
 
-  const taskDir = getTaskDir(taskId);
-  const existing = readRunRecord(taskDir);
-  const endTime = Date.now();
-
-  // Process gone with no recorded exit — mechanical COMPLETED (ADR-0002: not a verdict).
-  // If a closing record already exists, still sync meta so the board / cap unblock.
-  const updated = updateTaskMeta(taskId, {
-    status: 'COMPLETED',
-    endTime,
-    // Keep any prior exitCode; otherwise leave unset (unknown).
-  });
-  if (updated === null) return null;
-
-  if (existing === null) {
-    const rawLogPath = join(taskDir, 'raw.log');
-    const started = existsSync(rawLogPath);
-    settleTask(taskId, {
-      status: 'COMPLETED',
-      adapter: adapterForSettlement(meta.adapter),
-      ...started
-        ? { output: extractProcessOutput(readFileSync(rawLogPath, 'utf8')) }
-        : {},
-      exitCode: meta.exitCode ?? null,
-    });
-  }
-
-  generateReport(taskId, updated, RECONCILE_NOTE);
-  return updated;
+  // A missing PID establishes only that the process ended; exit code stays unknown.
+  return completeTask(taskId, { status: 'COMPLETED', note: RECONCILE_NOTE });
 }
 
 /**

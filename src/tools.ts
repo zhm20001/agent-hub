@@ -6,9 +6,7 @@ import {
   spawnDetachedTask,
   readTaskMeta,
   readResolution,
-  updateTaskMeta,
-  killTaskProcess,
-  generateReport,
+  terminateTask,
   type TaskMeta,
 } from './runner/detached.ts';
 import { resolveDefaultTimeout } from './runner/timeout-policy.ts';
@@ -93,18 +91,7 @@ export function registerSwarmTools(ctx?: DshContext, activeAgentGetter?: () => D
         return { message: `Task ${args.taskId} is already ${meta.status}` };
       }
 
-      if (meta.pid) {
-        killTaskProcess(meta.pid);
-      }
-
-      const updated = updateTaskMeta(args.taskId, {
-        status: 'KILLED',
-        endTime: Date.now(),
-      });
-
-      if (updated) {
-        generateReport(args.taskId, updated, 'Terminated via swarm_kill');
-      }
+      terminateTask(args.taskId, 'cancelled');
 
       return { taskId: args.taskId, status: 'KILLED' };
     },

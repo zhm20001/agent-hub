@@ -12,8 +12,7 @@ import {
   readTaskMeta,
   readResolution,
   updateTaskMeta,
-  killTaskProcess,
-  generateReport,
+  terminateTask,
   getTaskDir,
   type TaskMeta,
   filterBoardTasks,
@@ -183,18 +182,7 @@ app.post('/api/tasks/:id/kill', (req: Request, res: Response) => {
     return res.json({ message: `Task is already ${meta.status}`, meta });
   }
 
-  if (meta.pid) {
-    killTaskProcess(meta.pid);
-  }
-
-  const updated = updateTaskMeta(id, {
-    status: 'KILLED',
-    endTime: Date.now(),
-  });
-
-  if (updated) {
-    generateReport(id, updated, 'Terminated by operator via Web UI');
-  }
+  const updated = terminateTask(id, 'cancelled');
 
   res.json({ success: true, meta: updated });
 });

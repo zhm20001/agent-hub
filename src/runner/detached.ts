@@ -209,6 +209,73 @@ export function readResolution(taskId: string): RunRecord | null {
   return materializeRunRecord(taskId);
 }
 
+/** Facts available when a process closes, fails to start, or is recovered. */
+export interface TaskCompletion {
+  status: Exclude<TaskStatus, 'RUNNING'>;
+  output?: string;
+  exitCode?: number | null;
+  signal?: string | null;
+  error?: string;
+  note?: string;
+}
+
+/**
+ * Publish a terminal task together with its closing record and report.
+ * The first terminal status/end time wins; a late close may enrich exit facts.
+ * Recovery preserves an existing record, while actual process output refreshes it.
+ */
+export function completeTask(taskId: string, completion: TaskCompletion): TaskMeta | null {
+  const current = readTaskMeta(taskId);
+  if (current === null) return null;
+  const status = current.status === 'RUNNING' ? completion.status : current.status;
+  const endTime = current.endTime ?? Date.now();
+  // Persist the stop intent first: if settlement fails or this process exits,
+  // readResolution can reconstruct the record without losing cancellation/TTL.
+  const terminal = updateTaskMeta(taskId, {
+    status,
+    endTime,
+    ...(completion.exitCode === undefined ? {} : { exitCode: completion.exitCode }),
+    ...(completion.error === undefined ? {} : { error: completion.error }),
+  });
+  if (terminal === null) return null;
+  const rawLogPath = join(getTaskDir(taskId), 'raw.log');
+  if (completion.output !== undefined || readRunRecord(getTaskDir(taskId)) === null) {
+    const output = completion.output ?? (existsSync(rawLogPath)
+      ? extractProcessOutput(readFileSync(rawLogPath, 'utf8')) : undefined);
+    settleTask(taskId, {
+      status,
+      adapter: adapterForSettlement(current.adapter),
+      output,
+      exitCode: completion.exitCode !== undefined ? completion.exitCode : current.exitCode,
+      signal: completion.signal,
+      unmetPreconditions: (current.unmetPreconditions ?? []).map(name => ({ name })),
+    });
+  }
+
+  // Settlement may have enriched model/session metadata. Return that version.
+  const updated = readTaskMeta(taskId);
+  if (updated !== null) {
+    const note = status === 'KILLED' ? 'Terminated by request'
+      : status === 'TIMEOUT_KILLED' ? 'Task exceeded execution TTL limit and was terminated by Watchdog'
+      : completion.note ?? updated.error;
+    generateReport(taskId, updated, note);
+  }
+  return updated;
+}
+
+/**
+ * Stop a running task and persist all closing artifacts before returning.
+ * Missing tasks return null. Repeating a stop on a terminal task has no effects.
+ */
+export function terminateTask(taskId: string, cause: 'cancelled' | 'timeout'): TaskMeta | null {
+  const meta = readTaskMeta(taskId);
+  if (meta === null || meta.status !== 'RUNNING') return meta;
+  if (meta.pid) killTaskProcess(meta.pid);
+  return completeTask(taskId, {
+    status: cause === 'timeout' ? 'TIMEOUT_KILLED' : 'KILLED',
+  });
+}
+
 /** Known adapter names accepted by {@link getAdapter}. `shell` aliases `bash`. */
 export const KNOWN_ADAPTERS = ['zcode', 'bash', 'codex'] as const;
 
@@ -301,7 +368,6 @@ export function spawnDetachedTask(options: {
    */
   const refuseToStart = (
     reason: string,
-    settleAdapter: WorkerAdapter,
     unmet: readonly PreconditionUnmet[] = [],
   ): TaskMeta => {
     const meta: TaskMeta = {
@@ -319,9 +385,9 @@ export function spawnDetachedTask(options: {
       ...unmet.length === 0 ? {} : { unmetPreconditions: unmet.map(({ name }) => name) },
     };
     writeFileSync(metaPath, JSON.stringify(meta, null, 2));
-    settleTask(taskId, { status: 'FAILED', adapter: settleAdapter, unmetPreconditions: unmet });
-    generateReport(taskId, meta, `Not started: ${reason}`);
-    return meta;
+    return completeTask(taskId, {
+      status: 'FAILED', note: `Not started: ${reason}`,
+    })!;
   };
 
   let adapter: WorkerAdapter;
@@ -329,7 +395,7 @@ export function spawnDetachedTask(options: {
     adapter = getAdapter(adapterName);
   } catch (err) {
     if (err instanceof UnknownAdapterError) {
-      return refuseToStart(err.message, unknownAdapterStub(adapterName));
+      return refuseToStart(err.message);
     }
     throw err;
   }
@@ -341,7 +407,7 @@ export function spawnDetachedTask(options: {
     adapter.checkPreconditions?.();
   } catch (err: any) {
     if (err instanceof PreconditionUnmetError) {
-      return refuseToStart(err.message, adapter, [{ name: err.precondition }]);
+      return refuseToStart(err.message, [{ name: err.precondition }]);
     }
     throw err;
   }
@@ -375,7 +441,7 @@ export function spawnDetachedTask(options: {
     });
   } catch (err: any) {
     closeSync(logFd);
-    return refuseToStart(`Failed to spawn: ${err.message}`, adapter);
+    return refuseToStart(`Failed to spawn: ${err.message}`);
   }
 
   const pid = child.pid;
@@ -398,41 +464,32 @@ export function spawnDetachedTask(options: {
 
   writeFileSync(metaPath, JSON.stringify(meta, null, 2));
 
-  child.on('close', (code, signal) => {
+  // Node emits close after error too. Close the descriptor exactly once.
+  let logClosed = false;
+  const closeLog = () => {
+    if (logClosed) return;
+    logClosed = true;
     closeSync(logFd);
-    const currentMeta = readTaskMeta(taskId) || meta;
-    if (currentMeta.status === 'RUNNING') {
-      currentMeta.status = code === 0 ? 'COMPLETED' : 'FAILED';
-      currentMeta.exitCode = code;
-      currentMeta.endTime = Date.now();
-      writeFileSync(metaPath, JSON.stringify(currentMeta, null, 2));
-    }
-    // Settle even when the status was already terminal (killed by the watchdog
-    // or by an operator): the closing record has to exist for those runs too.
-    settleTask(taskId, {
-      status: currentMeta.status,
-      adapter,
+  };
+
+  child.on('close', (code, signal) => {
+    closeLog();
+    completeTask(taskId, {
+      status: code === 0 ? 'COMPLETED' : 'FAILED',
       output: extractProcessOutput(readFileSync(rawLogPath, 'utf8')),
       exitCode: code,
       signal,
     });
-    generateReport(taskId, currentMeta);
   });
 
   child.on('error', (err) => {
-    try { closeSync(logFd); } catch {}
-    const currentMeta = readTaskMeta(taskId) || meta;
-    currentMeta.status = 'FAILED';
-    currentMeta.error = err.message;
-    currentMeta.endTime = Date.now();
-    writeFileSync(metaPath, JSON.stringify(currentMeta, null, 2));
-    settleTask(taskId, {
+    closeLog();
+    completeTask(taskId, {
       status: 'FAILED',
-      adapter,
-      output: readFileSync(rawLogPath, 'utf8'),
+      output: extractProcessOutput(readFileSync(rawLogPath, 'utf8')),
       exitCode: null,
+      error: err.message,
     });
-    generateReport(taskId, currentMeta, err.message);
   });
 
   // unref allows caller (and server/DSH) to exit or live independently

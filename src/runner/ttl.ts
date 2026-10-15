@@ -4,8 +4,7 @@ import {
   SWARM_RUNS_DIR,
   readTaskMeta,
   updateTaskMeta,
-  generateReport,
-  killTaskProcess,
+  terminateTask,
   getTaskDir,
   readResolution,
 } from './detached.ts';
@@ -97,18 +96,7 @@ export class TtlWatchdog {
           appendFileSync(rawLogPath, timeoutWarning, 'utf8');
         } catch {}
 
-        if (meta.pid) {
-          killTaskProcess(meta.pid);
-        }
-
-        const updated = updateTaskMeta(taskId, {
-          status: 'TIMEOUT_KILLED',
-          endTime: now,
-        });
-
-        if (updated) {
-          generateReport(taskId, updated, 'Task exceeded execution TTL limit and was terminated by Watchdog');
-        }
+        terminateTask(taskId, 'timeout');
       }
     } catch {}
   }
