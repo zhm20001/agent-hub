@@ -34,7 +34,10 @@ export class TaskStore {
       const changes = typeof patch === 'function' ? patch(current) : patch;
       const updated = { ...current, ...changes, taskId: current.taskId };
       // The first recorded stop wins; later close callbacks may add exit facts.
-      if (current.status !== 'RUNNING') { updated.status = current.status; updated.endTime = current.endTime; }
+      if (current.status !== 'RUNNING') {
+        updated.status = current.status;
+        if (current.endTime !== undefined) updated.endTime = current.endTime;
+      }
       atomicWrite(join(dir, 'meta.json'), JSON.stringify(updated, null, 2));
       return updated;
     });

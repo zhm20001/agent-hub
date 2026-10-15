@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, realpathSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, realpathSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -34,6 +34,8 @@ test('cross-process updates merge the latest data while readers only see complet
   const root = mkdtempSync(join(tmpdir(), 'hub-store-')); const store = new TaskStore(root);
   try {
     store.create(meta('counter'));
+    mkdirSync(join(root, 'counter/.meta.lock'));
+    writeFileSync(join(root, 'counter/.meta.lock/2147483646-bbbbbbbb.json'), JSON.stringify({ number: 1 }));
     const writers = Array.from({ length: 3 }, (_, i) => child(`
       const { TaskStore } = await import(${JSON.stringify(storeUrl)});
       const store = new TaskStore(${JSON.stringify(root)});
@@ -43,7 +45,8 @@ test('cross-process updates merge the latest data while readers only see complet
     try { await Promise.all(writers); } finally { clearInterval(reader); }
     assert.equal(store.read('counter')?.label, '90');
     assert.equal(existsSync(join(root, 'counter/.meta.lock')), false);
-    writeFileSync(join(root, 'counter/.meta.lock'), JSON.stringify({ pid: 2147483646 }));
+    mkdirSync(join(root, 'counter/.meta.lock'));
+    writeFileSync(join(root, 'counter/.meta.lock/2147483646-aaaaaaaa.json'), JSON.stringify({ number: 1 }));
     store.update('counter', { archived: true }); assert.equal(store.read('counter')?.archived, true);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -64,8 +67,19 @@ test('a dead dispatcher lock is recovered before admitting another task', async 
   const root = mkdtempSync(join(tmpdir(), 'hub-dead-dispatch-'));
   const store = new TaskStore(root);
   try {
-    writeFileSync(join(root, '.dispatch.lock'), JSON.stringify({ pid: 2147483646 }));
+    mkdirSync(join(root, '.dispatch.lock'));
+    writeFileSync(join(root, '.dispatch.lock/2147483646-aaaaaaaa.json'), JSON.stringify({ number: 1 }));
     assert.equal(store.withDispatchLock(() => 'admitted'), 'admitted');
     assert.equal(existsSync(join(root, '.dispatch.lock')), false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('recovery may fill an absent end time but cannot replace a recorded one', () => {
+  const root = mkdtempSync(join(tmpdir(), 'hub-end-time-')); const store = new TaskStore(root);
+  try {
+    store.create({ ...meta('ended'), status: 'COMPLETED' });
+    assert.equal(store.update('ended', { endTime: 50 })?.endTime, 50);
+    assert.equal(store.update('ended', { endTime: 99, status: 'RUNNING' })?.endTime, 50);
+    assert.equal(store.read('ended')?.status, 'COMPLETED');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

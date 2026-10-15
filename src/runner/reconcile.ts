@@ -1,3 +1,4 @@
+import { recordedProcessPid, recordedProcessExit, abandonUnclaimedLaunch } from './process-launcher.ts';
 /**
  * Reconcile orphan RUNNING tasks whose child process is already gone.
  *
@@ -18,6 +19,7 @@ import { defaultTaskStore } from './task-store.ts';
 import {
   SWARM_RUNS_DIR,
   readTaskMeta,
+  updateTaskMeta,
   completeTask,
   type TaskMeta,
 } from './detached.ts';
@@ -38,7 +40,10 @@ export interface ReconcileResult {
  */
 export function isOrphanRunning(meta: TaskMeta): boolean {
   if (meta.status !== 'RUNNING') return false;
-  return !isProcessAlive(meta.pid);
+  const pid = meta.pid ?? recordedProcessPid(defaultTaskStore.dir(meta.taskId));
+  if (isProcessAlive(pid)) return false;
+  if (!pid && isProcessAlive(meta.launchOwnerPid)) return false;
+  return true;
 }
 
 /**
@@ -47,10 +52,17 @@ export function isOrphanRunning(meta: TaskMeta): boolean {
  */
 export function reconcileOrphanTask(taskId: string): TaskMeta | null {
   const meta = readTaskMeta(taskId);
-  if (meta === null || !isOrphanRunning(meta)) return null;
-
-  // A missing PID establishes only that the process ended; exit code stays unknown.
-  return completeTask(taskId, { status: 'COMPLETED', note: RECONCILE_NOTE });
+  if (meta === null || meta.status !== 'RUNNING') return null;
+  let recordedPid = meta.pid ?? recordedProcessPid(defaultTaskStore.dir(taskId));
+  if (!recordedPid && meta.launchOwnerPid && !isProcessAlive(meta.launchOwnerPid)) {
+    abandonUnclaimedLaunch(defaultTaskStore.dir(taskId));
+    recordedPid = recordedProcessPid(defaultTaskStore.dir(taskId));
+  }
+  if (!meta.pid && recordedPid) updateTaskMeta(taskId, { pid: recordedPid, launchOwnerPid: undefined });
+  if (!isOrphanRunning({ ...meta, pid: recordedPid })) return null;
+  const actual = recordedProcessExit(defaultTaskStore.dir(taskId));
+  return completeTask(taskId, { status: actual && actual.exitCode !== 0 ? 'FAILED' : 'COMPLETED',
+    ...actual, note: RECONCILE_NOTE });
 }
 
 /**

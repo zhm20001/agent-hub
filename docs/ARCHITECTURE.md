@@ -41,33 +41,21 @@
 ## 2. 关键核心机制
 
 ### 2.1 彻底脱钩的后台执行 (Detached Spawning)
-传统的 `child_process.exec` 或 `spawn` 默认与父进程共享 stdio 管道，父进程关闭将触发 `SIGPIPE` 或子进程强制退出。
+派发先在文件存储中登记 `RUNNING`，占用并发名额，再启动独立的 Node 启动进程。启动进程先记录自己的 PID，才启动真实 Agent；两者处于同一个进程组，标准输出和错误直接写入 `raw.log`。父进程调用 `unref()`，因此平台关闭后任务仍可继续。
 
-在 `src/runner/detached.ts` 中，我们实现了 DispatchDock 的核心模式：
-```typescript
-const logFd = openSync(path.join(taskDir, 'raw.log'), 'a');
+看板中的 PID 指向这个启动进程。它等待 Agent 结束，将实际退出码、信号或启动错误写入 `process-exit.json` 后退出。`meta.json` 来不及保存 PID 时，恢复逻辑可从 `process.pid` 补回；没有退出记录的旧任务仍按“进程已结束，退出码未知”收尾。
 
-const child = spawn(commandSpec.cmd, commandSpec.args, {
-  detached: true,
-  stdio: ['ignore', logFd, logFd], // 彻底脱离父进程管道
-  cwd: taskCwd,
-  env: commandSpec.env || process.env,
-});
+恢复或取消也可抢先将 `process.pid` 记为 `0`。身份登记采用同目录硬链接的独占创建：启动进程和恢复只能有一方取得登记位置。恢复先取得位置时，迟到的启动进程退出，不会再启动 Agent。
 
-// 解除父事件循环对子进程的引用计数，允许父进程或主服务在子进程运行期间随时退出/重启
-child.unref();
-```
+### 2.2 收尾发布与看门狗
 
-### 2.2 双保险状态流转与看门狗 (Watchdog & Watcher)
-为防止任务失控，系统设置了双层防护网：
+任务结束时先记停止事实，随后写收尾记录和报告，最后原子发布 `completion.json`。`watcher.ts` 监听实际目录中的这个发布文件，读取完整报告后通知订阅者。短任务不需要先被观察到 `RUNNING`；同一个 watcher 生命周期内，每任务通知一次。启动前已有的终态任务作为历史基线，不承诺重启后的持久化通知投递。
 
-1. **实时文件监听 (`src/watcher.ts`)**：
-   - 基于 `chokidar` 监听 `.swarm-runs/*/meta.json`。
-   - 捕捉 `RUNNING -> COMPLETED / FAILED / KILLED` 状态流转。
-   - 读取伴随生成的 `report.md`，通过 `apply()` 中注册的回调自动将结果注入活跃的 DSH Master Agent 会话。
-2. **主动超时看门狗 (`src/runner/ttl.ts`)**：
-   - 定时巡检（默认 10 秒周期）所有活跃任务的 `meta.json`。
-   - 若 `Date.now() - startTime > timeout * 1000`，立即触发进程终止，避免死循环造成服务器资源枯竭。
+`ttl.ts` 默认每 10 秒巡检。先恢复已退出的任务，再检查超时；进程仍存活且最近有输出时可延长一次，否则统一调用任务终止逻辑。
+
+任务文件由 `TaskStore` 保管，元数据、收尾记录和报告写好后再原子替换。跨进程更新按任务排队，派发名额检查与启动在同一个锁内进行。每位等待者使用带 PID 和随机标识的独立票据，清理已退出进程的票据不会删除新进程的票据。
+
+任务查询统一由 `task-queries.ts` 整理，HTTP 与工具入口共用。Agent 对话格式在 adapter 中解析为同一份消息列表；报告、对话和模型信息据此生成。文件没变时复用解析结果，变化后重新读取；详情日志最多读取末尾 20KB 后返回 5000 字符。
 
 ### 2.3 跨平台进程树杀除 (Cross-Platform Process Termination)
 子 Agent 执行复杂脚本时可能衍生孙子进程（例如 Node CLI 启动了一个 Python 脚本或 Bash 编译器）：

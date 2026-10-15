@@ -178,7 +178,7 @@ npm run restart
 
 If the board process restarts (or the spawn close handler never fires), a task can stay `meta.status=RUNNING` after the child PID is gone. That lies on the Kanban and can fill the concurrent cap.
 
-**Fix (YAGNI):** on `GET /api/tasks` (board load / poll), `GET /api/tasks/:id`, and each TTL watchdog tick, Hub scans RUNNING metas; if `pid` is missing or `kill(pid,0)` fails, it marks **COMPLETED**, writes `resolution.json` + `report.md` when missing, then harvest works as usual. No new status enum — mechanical settle only (ADR-0002).
+On board queries and watchdog ticks, Hub first restores a missing supervisor PID from `process.pid`. A live dispatcher may still be preparing a launch, so a missing PID alone does not end that task. If the dispatcher is gone and no supervisor has registered, recovery atomically prevents a late launch. Once the supervisor is gone, `process-exit.json` supplies the actual exit facts when available; otherwise legacy tasks become **COMPLETED** with unknown exit code. Recovery fills missing closing artifacts and publishes `completion.json` only after the report is ready. These are mechanical facts, not a verdict (ADR-0002).
 
 ```bash
 # After restart, list once (or wait ≤ watchdog interval) to clear orphans:

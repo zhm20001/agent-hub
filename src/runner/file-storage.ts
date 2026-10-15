@@ -1,5 +1,5 @@
 /** Atomic publication and short cross-process locks for local task files. */
-import { openSync, closeSync, writeFileSync, renameSync, unlinkSync, readFileSync, statSync } from 'node:fs';
+import { writeFileSync, renameSync, unlinkSync, readFileSync, mkdirSync, readdirSync, rmdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 
 export function atomicWrite(path: string, text: string): void {
@@ -13,32 +13,48 @@ export function readJson<T>(path: string): T | null {
 }
 const held = new Set<string>();
 const pause = new Int32Array(new SharedArrayBuffer(4));
+
+/** Lamport's bakery ordering: each contender owns a unique PID/UUID ticket.
+ * Reaping a dead contender can never delete a new holder's ticket. Empty tickets
+ * mean "choosing a number"; they must be waited on while their owner is alive.
+ * This is a local-filesystem, synchronous lock, not a distributed lease.
+ */
 export function withFileLock<T>(path: string, action: () => T): T {
-  // Reentrant only inside a synchronous call stack in this process.
   if (held.has(path)) return action();
+  const id = `${process.pid}-${randomUUID()}.json`;
+  const own = `${path}/${id}`;
   const deadline = Date.now() + 5000;
+  // A final releaser may remove the now-empty directory between mkdir and write.
   while (true) {
-    try {
-      const fd = openSync(path, 'wx');
-      try { writeFileSync(fd, JSON.stringify({ pid: process.pid })); } finally { closeSync(fd); }
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      try {
-        const before = statSync(path);
-        const owner = readJson<{ pid?: number }>(path);
-        let dead = false;
-        if (owner?.pid) { try { process.kill(owner.pid, 0); } catch (e) { dead = (e as NodeJS.ErrnoException).code === 'ESRCH'; } }
-        // Empty lock: the owner may be writing its PID. Allow a grace period.
-        if ((dead || (!owner?.pid && Date.now() - before.mtimeMs > 5000)) && statSync(path).ino === before.ino) {
-          unlinkSync(path); continue;
+    mkdirSync(path, { recursive: true });
+    try { writeFileSync(own, '', { flag: 'wx' }); break; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  }
+  function entries() {
+    return readdirSync(path).flatMap(name => {
+      const match = /^(\d+)-[a-f0-9-]+\.json$/.exec(name);
+      if (!match) return [];
+      try { process.kill(Number(match[1]), 0); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ESRCH') {
+          try { unlinkSync(`${path}/${name}`); } catch {}
+          return [];
         }
-      } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue; }
+      }
+      return [{ name, number: readJson<{ number: number }>(`${path}/${name}`)?.number ?? 0 }];
+    });
+  }
+  try {
+    const number = 1 + Math.max(0, ...entries().map(entry => entry.number));
+    atomicWrite(own, JSON.stringify({ number }));
+    while (entries().some(entry => entry.name !== id &&
+      (entry.number === 0 || entry.number < number || (entry.number === number && entry.name < id)))) {
       if (Date.now() >= deadline) throw new Error(`Task storage lock busy: ${path}`);
       Atomics.wait(pause, 0, 0, 5);
     }
+    held.add(path);
+    try { return action(); } finally { held.delete(path); }
+  } finally {
+    try { unlinkSync(own); } finally { try { rmdirSync(path); } catch {} }
   }
-  held.add(path);
-  try { return action(); }
-  finally { held.delete(path); unlinkSync(path); }
 }

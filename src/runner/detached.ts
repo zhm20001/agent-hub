@@ -1,3 +1,4 @@
+import { PROCESS_LAUNCHER, recordedProcessExit, recordedProcessPid, abandonUnclaimedLaunch } from './process-launcher.ts';
 import { spawn, execSync } from 'node:child_process';
 import { openSync, closeSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -214,7 +215,12 @@ function publishCompletion(taskId: string, completion: TaskCompletion): TaskMeta
 export function terminateTask(taskId: string, cause: 'cancelled' | 'timeout'): TaskMeta | null {
   const meta = readTaskMeta(taskId);
   if (meta === null || meta.status !== 'RUNNING') return meta;
-  if (meta.pid) killTaskProcess(meta.pid);
+  let pid = meta.pid ?? recordedProcessPid(getTaskDir(taskId));
+  if (!pid && meta.launchOwnerPid) {
+    abandonUnclaimedLaunch(getTaskDir(taskId));
+    pid = recordedProcessPid(getTaskDir(taskId));
+  }
+  if (pid) killTaskProcess(pid);
   return completeTask(taskId, {
     status: cause === 'timeout' ? 'TIMEOUT_KILLED' : 'KILLED',
   });
@@ -325,40 +331,35 @@ function spawnTask(options: DispatchOptions): TaskMeta {
 
   writeFileSync(rawLogPath, header, { flag: 'a' });
 
-  const logFd = openSync(rawLogPath, 'a');
-
+  // Reserve the slot before any process can start. A supervisor writes its own
+  // identity before launching the Agent, closing the spawn→meta crash window.
+  const meta: TaskMeta = {
+    taskId, ticket: options.ticket,
+    label: options.label || options.prompt.slice(0, 50),
+    prompt: options.prompt, status: 'RUNNING', startTime: Date.now(), timeout,
+    adapter: adapterName, cwd: taskCwd, launchOwnerPid: process.pid,
+    ...(options.resumeSessionId ? { sessionId: options.resumeSessionId } : {}),
+  };
+  defaultTaskStore.writeInitial(meta);
+  let logFd: number | undefined;
   let child;
   try {
-    child = spawn(commandSpec.cmd, commandSpec.args, {
+    logFd = openSync(rawLogPath, 'a');
+    child = spawn(process.execPath, ['-e', PROCESS_LAUNCHER, taskDir, commandSpec.cmd, ...commandSpec.args], {
       detached: true,
       stdio: ['ignore', logFd, logFd],
       cwd: taskCwd,
       env: commandSpec.env || process.env,
     });
+    if (child.pid) {
+      meta.pid = child.pid;
+      defaultTaskStore.update(taskId, { pid: child.pid, launchOwnerPid: undefined });
+    }
   } catch (err: any) {
-    closeSync(logFd);
-    return refuseToStart(`Failed to spawn: ${err.message}`);
+    if (logFd !== undefined) closeSync(logFd);
+    if (child?.pid) killTaskProcess(child.pid);
+    return completeTask(taskId, { status: 'FAILED', output: '', error: err.message })!;
   }
-
-  const pid = child.pid;
-
-  const meta: TaskMeta = {
-    taskId,
-    ticket: options.ticket,
-    label: options.label || options.prompt.slice(0, 50),
-    prompt: options.prompt,
-    pid,
-    status: 'RUNNING',
-    startTime: Date.now(),
-    timeout,
-    adapter: adapterName,
-    cwd: taskCwd,
-    ...(typeof options.resumeSessionId === 'string' && options.resumeSessionId.length > 0
-      ? { sessionId: options.resumeSessionId }
-      : {}),
-  };
-
-  defaultTaskStore.writeInitial(meta);
 
   // Node emits close after error too. Close the descriptor exactly once.
   let logClosed = false;
@@ -370,11 +371,11 @@ function spawnTask(options: DispatchOptions): TaskMeta {
 
   child.on('close', (code, signal) => {
     closeLog();
+    const actual = recordedProcessExit(taskDir) ?? { exitCode: code, signal };
     completeTask(taskId, {
-      status: code === 0 ? 'COMPLETED' : 'FAILED',
+      status: actual.exitCode === 0 ? 'COMPLETED' : 'FAILED',
       output: extractProcessOutput(readFileSync(rawLogPath, 'utf8')),
-      exitCode: code,
-      signal,
+      ...actual,
     });
   });
 

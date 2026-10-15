@@ -6,6 +6,8 @@ export interface TaskMeta {
   label: string;
   prompt: string;
   pid?: number;
+  /** Dispatcher still assembling this launch; removed after supervisor PID is saved. */
+  launchOwnerPid?: number;
   status: TaskStatus;
   startTime: number;
   endTime?: number;
