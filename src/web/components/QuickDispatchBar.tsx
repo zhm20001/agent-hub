@@ -11,7 +11,7 @@ export const QuickDispatchBar: React.FC<QuickDispatchBarProps> = ({ onDispatched
   const t = translations[lang];
   const [prompt, setPrompt] = useState('');
   const [ticket, setTicket] = useState('');
-  const [adapter, setAdapter] = useState<'zcode' | 'bash'>('zcode');
+  const [adapter, setAdapter] = useState<'zcode' | 'codex' | 'bash'>('zcode');
   const [mode, setMode] = useState('edit');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -92,6 +92,18 @@ export const QuickDispatchBar: React.FC<QuickDispatchBarProps> = ({ onDispatched
           >
             <Sparkles className="h-3.5 w-3.5" />
             <span>ZCode CLI</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setAdapter('codex')}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${
+ adapter === 'codex'
+ ? 'bg-accent text-page'
+ : 'text-ink-secondary hover:text-ink'
+ }`}
+          >
+            <Cpu className="h-3.5 w-3.5" />
+            <span>Codex</span>
           </button>
           <button
             type="button"

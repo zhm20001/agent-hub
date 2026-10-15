@@ -14,11 +14,11 @@ Live endpoint: `POST /api/tasks/dispatch` on the board (`npm run start` → `:30
 | `prompt` | **yes** | Full instruction for the worker (string). |
 | `ticket` | no | Issue / ticket id (e.g. `T-12`, `feat-login`). |
 | `label` | no | Short headline; defaults to prompt prefix. |
-| `adapter` | no | `zcode` (default) or `bash`. |
+| `adapter` | no | `zcode` (default), `codex`, or `bash`. Unknown names are refused (no silent ZCode fallback). |
 | `mode` | no | `edit` (default), `build`, `plan`, `yolo`. |
 | `cwd` | no | Absolute path; **must** be under `AGENT_HUB_TASK_ROOTS` (or default allowlist). HTTP **400** if outside. |
 | `timeout` | no | Seconds before watchdog kill (default `7200` / `AGENT_HUB_DEFAULT_TIMEOUT`). |
-| `resumeSessionId` | no | ZCode `--resume <sess_…>` handle. Hub adapter wires it when set. |
+| `resumeSessionId` | no | Worker session/thread id. ZCode: `--resume <sess_…>`; Codex: `exec resume --json <id> -- <prompt>`. |
 
 Response **201** → task `meta` (`taskId`, `status`, `pid`, …).
 

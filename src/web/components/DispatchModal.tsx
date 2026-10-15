@@ -323,6 +323,7 @@ export const DispatchModal: React.FC<DispatchModalProps> = ({
                 className="w-full bg-page border border-line-strong rounded-sm px-3 py-2 text-xs text-ink focus:outline-none focus:border-accent"
               >
                 <option value="zcode">{t.adapterZcode}</option>
+                <option value="codex">{t.adapterCodex}</option>
                 <option value="bash">{t.adapterBash}</option>
               </select>
             </div>

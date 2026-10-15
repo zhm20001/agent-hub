@@ -20,7 +20,7 @@ export function registerSwarmTools(ctx?: DshContext, activeAgentGetter?: () => D
   // swarm_dispatch
   ctx.tools.register({
     name: 'swarm_dispatch',
-    description: 'Dispatch an autonomous background subagent task (ZCode CLI or Bash) with detached filesystem logging (.swarm-runs/<taskId>/raw.log). Non-blocking and survives parent session reloads.',
+    description: 'Dispatch an autonomous background subagent task (ZCode CLI, Codex, or Bash) with detached filesystem logging (.swarm-runs/<taskId>/raw.log). Non-blocking and survives parent session reloads.',
     parameters: {
       prompt: {
         type: 'string',
@@ -37,7 +37,7 @@ export function registerSwarmTools(ctx?: DshContext, activeAgentGetter?: () => D
       },
       adapter: {
         type: 'string',
-        description: 'Subagent execution backend: "zcode" (default) or "bash".',
+        description: 'Subagent execution backend: "zcode" (default), "codex", or "bash".',
       },
       mode: {
         type: 'string',
