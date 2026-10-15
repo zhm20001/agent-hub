@@ -9,7 +9,7 @@ import {
   readResolution,
 } from './detached.ts';
 import { decideWatchdogAction } from './timeout-policy.ts';
-import { resolveTranscriptPath } from './harvest.ts';
+import { locateRunTranscript } from './transcript.ts';
 import { reconcileOrphanRunningTasks } from './reconcile.ts';
 
 export class TtlWatchdog {
@@ -55,9 +55,7 @@ export class TtlWatchdog {
         const elapsedMs = now - meta.startTime;
         const taskDir = getTaskDir(taskId);
         const record = readResolution(taskId);
-        const transcriptPath = record?.transcriptPath
-          ?? resolveTranscriptPath(record?.resolution.transcriptRef)
-          ?? null;
+        const { transcriptPath } = locateRunTranscript(record, meta);
 
         const decision = decideWatchdogAction({
           elapsedMs,

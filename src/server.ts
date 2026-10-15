@@ -17,7 +17,7 @@ import {
   type TaskMeta,
   filterBoardTasks,
 } from './runner/detached.ts';
-import { harvestTask, repairTimeoutTranscript, resolutionJsonPath } from './runner/harvest.ts';
+import { harvestTask, repairTaskTranscript, resolutionJsonPath } from './runner/harvest.ts';
 import { reconcileOrphanRunningTasks, reconcileOrphanTask } from './runner/reconcile.ts';
 import { summarizeTranscript } from './web/lib/board-ux.ts';
 import { resolveModelInfo } from './runner/model-info.ts';
@@ -416,7 +416,7 @@ app.get('/api/tasks/:id/conversation', (req: Request, res: Response) => {
   }
 
   let closingRecord = readResolution(id);
-  const repaired = repairTimeoutTranscript(id, closingRecord);
+  const repaired = repairTaskTranscript(id, closingRecord);
   if (repaired.record !== null) closingRecord = repaired.record;
   if (repaired.sessionId && !meta.sessionId) {
     updateTaskMeta(id, { sessionId: repaired.sessionId });

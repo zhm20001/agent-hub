@@ -3,14 +3,13 @@ import { openSync, closeSync, mkdirSync, writeFileSync, readFileSync, existsSync
 import { join, resolve } from 'node:path';
 import { assertCwdAllowed } from './task-roots.ts';
 import { assertUnderConcurrentCap } from './concurrency.ts';
-import { discoverRolloutTranscript, resolveTranscriptPath } from './harvest.ts';
+import { locateRunTranscript } from './transcript.ts';
 import { resolveDefaultTimeout } from './timeout-policy.ts';
 import { resolveModelInfo } from './model-info.ts';
 import type { WorkerAdapter } from '../adapters/base.ts';
 import type { FinalText, PreconditionUnmet, SessionRef, TranscriptRef } from '../adapters/contract.ts';
-import { ZCodeAdapter } from '../adapters/zcode.ts';
-import { BashAdapter } from '../adapters/bash.ts';
-import { CodexAdapter } from '../adapters/codex.ts';
+import { getAdapter, adapterForSettlement, UnknownAdapterError, unknownAdapterStub } from '../adapters/registry.ts';
+export { getAdapter, adapterForSettlement, UnknownAdapterError, KNOWN_ADAPTERS } from '../adapters/registry.ts';
 import { PreconditionUnmetError } from '../adapters/preconditions.ts';
 import {
   RUN_RECORD_FILE,
@@ -44,8 +43,7 @@ export interface TaskMeta {
   /** Best-effort provider id from ZCode model-io / result (board card). */
   providerId?: string;
   /**
-   * ZCode session id when known (from CLI result, or discovered from model-io
-   * filename after TIMEOUT). Lets harvest resolve transcript without guessing.
+   * Adapter-owned session handle when known from output or transcript discovery.
    */
   sessionId?: string;
   /**
@@ -130,36 +128,14 @@ export function settleTask(taskId: string, facts: {
     unmetPreconditions: facts.unmetPreconditions ?? [],
   });
   const taskDir = getTaskDir(taskId);
-  // Persist on-disk transcript path when already known (board should not only guess at read).
-  let transcriptPath = resolveTranscriptPath(record.resolution.transcriptRef);
-  let sessionId = record.resolution.transcriptRef?.handle
-    ?? record.resolution.sessionRef?.handle;
-  let toWrite: RunRecord = transcriptPath === null ? record : { ...record, transcriptPath };
-
-  // TIMEOUT/kill often never got a CLI result object — discover model-io by time / meta.sessionId.
-  if (transcriptPath === null
-      && (facts.status === 'TIMEOUT_KILLED' || facts.status === 'KILLED')) {
-    const meta = readTaskMeta(taskId);
-    const discovered = discoverRolloutTranscript({
-      sessionId: meta?.sessionId ?? sessionId,
-      startTimeMs: meta?.startTime,
-      endTimeMs: meta?.endTime,
-    });
-    if (discovered !== null) {
-      transcriptPath = discovered.path;
-      sessionId = discovered.sessionId;
-      const resolution = {
-        ...record.resolution,
-        ...record.resolution.transcriptRef === undefined
-          ? { transcriptRef: { provenance: 'zcode' as const, handle: discovered.sessionId } }
-          : {},
-        ...record.resolution.sessionRef === undefined
-          ? { sessionRef: { provenance: 'zcode' as const, handle: discovered.sessionId } }
-          : {},
-      };
-      toWrite = { ...record, resolution, transcriptPath };
-    }
-  }
+  const meta = readTaskMeta(taskId);
+  const located = locateRunTranscript(record, {
+    ...meta,
+    adapter: facts.adapter.name,
+    status: facts.status,
+  }, { adapter: facts.adapter });
+  const toWrite = located.record ?? record;
+  const sessionId = toWrite.resolution.sessionRef?.handle;
   writeRunRecord(taskDir, toWrite);
 
   // Best-effort model/provider for the kanban card (from model-io or raw output).
@@ -274,59 +250,6 @@ export function terminateTask(taskId: string, cause: 'cancelled' | 'timeout'): T
   return completeTask(taskId, {
     status: cause === 'timeout' ? 'TIMEOUT_KILLED' : 'KILLED',
   });
-}
-
-/** Known adapter names accepted by {@link getAdapter}. `shell` aliases `bash`. */
-export const KNOWN_ADAPTERS = ['zcode', 'bash', 'codex'] as const;
-
-/** Raised when dispatch/meta names an adapter that is not registered. */
-export class UnknownAdapterError extends Error {
-  readonly adapterName: string;
-
-  constructor(adapterName: string) {
-    super(
-      `unknown adapter: ${adapterName} `
-        + `(known: ${KNOWN_ADAPTERS.join(', ')}; shell is an alias of bash)`,
-    );
-    this.name = 'UnknownAdapterError';
-    this.adapterName = adapterName;
-  }
-}
-
-/** Settlement stub for historical metas with a typo'd adapter — no translate(). */
-function unknownAdapterStub(name: string): WorkerAdapter {
-  return {
-    name,
-    description: `unknown adapter (${name})`,
-    buildCommand: () => ({ cmd: 'false', args: [] }),
-  };
-}
-
-/**
- * Resolve a registered worker adapter. Unknown names fail loud — never fall
- * back to ZCode (a typo like `Codex` must not launch the wrong backend).
- */
-export function getAdapter(name: string): WorkerAdapter {
-  if (name === 'bash' || name === 'shell') {
-    return new BashAdapter();
-  }
-  if (name === 'codex') {
-    return new CodexAdapter();
-  }
-  if (name === 'zcode') {
-    return new ZCodeAdapter();
-  }
-  throw new UnknownAdapterError(name);
-}
-
-/** Like {@link getAdapter}, but soft for reconcile/materialize of old metas. */
-export function adapterForSettlement(name: string): WorkerAdapter {
-  try {
-    return getAdapter(name);
-  } catch (err) {
-    if (err instanceof UnknownAdapterError) return unknownAdapterStub(name);
-    throw err;
-  }
 }
 
 /**

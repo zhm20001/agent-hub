@@ -11,7 +11,24 @@
  * `contract.ts`).
  */
 
-import type { AdapterRawOutput, AdapterTranslation } from './contract.ts';
+import type { AdapterRawOutput, AdapterTranslation, SessionRef, TranscriptRef } from './contract.ts';
+
+/** Disk-only lookup. Refs and session handles belong exclusively to this adapter. */
+export interface TranscriptLookup {
+  readonly transcriptRef?: TranscriptRef;
+  readonly sessionRef?: SessionRef;
+  readonly sessionId?: string;
+  /** Supplied only for interrupted runs; an adapter may use it when no handle exists. */
+  readonly interrupted?: { readonly startTimeMs?: number; readonly endTimeMs?: number };
+  readonly home?: string;
+}
+
+export interface LocatedTranscript {
+  readonly path: string;
+  readonly transcriptRef: TranscriptRef;
+  readonly sessionRef?: SessionRef;
+  readonly via: string;
+}
 
 export interface AdapterCommandSpec {
   prompt: string;
@@ -79,4 +96,11 @@ export interface WorkerAdapter {
    * output *is* its answer).
    */
   translate?(raw: AdapterRawOutput): AdapterTranslation;
+
+  /**
+   * Locate an existing transcript without launching a CLI or writing state.
+   * Return null when unavailable. Never substitute another session for a known
+   * handle. Omitted means this adapter does not support on-disk discovery.
+   */
+  locateTranscript?(input: TranscriptLookup): LocatedTranscript | null;
 }

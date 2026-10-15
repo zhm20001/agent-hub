@@ -18,11 +18,12 @@ import {
   resolveLastTurnCap,
   extractLastAssistantMessage,
   harvestTask,
-  discoverRolloutTranscript,
-  resolveTranscriptPath,
+  repairTaskTranscript,
   truncateText,
 } from '../src/runner/harvest.ts';
-import type { RunRecord } from '../src/runner/settlement.ts';
+import { ZCodeAdapter } from '../src/adapters/zcode.ts';
+import { readRunRecord, type RunRecord } from '../src/runner/settlement.ts';
+import { getTaskDir } from '../src/runner/detached.ts';
 
 const scratchDirs: string[] = [];
 
@@ -123,7 +124,7 @@ describe('extractLastAssistantMessage', () => {
   });
 });
 
-describe('resolveTranscriptPath + harvestTask', () => {
+describe('adapter transcript lookup + harvestTask', () => {
   it('resolves model-io-*.jsonl under ~/.zcode/cli/rollout', () => {
     const home = scratch();
     const handle = 'sess_harvest-test-0001';
@@ -133,7 +134,7 @@ describe('resolveTranscriptPath + harvestTask', () => {
     writeFileSync(path, `${JSON.stringify({ response: { text: 'from-disk' } })}\n`);
 
     assert.equal(
-      resolveTranscriptPath({ provenance: 'zcode', handle }, { home }),
+      new ZCodeAdapter().locateTranscript({ transcriptRef: { provenance: 'zcode', handle }, home })?.path,
       path,
     );
   });
@@ -204,7 +205,7 @@ describe('resolveTranscriptPath + harvestTask', () => {
   });
 });
 
-describe('discoverRolloutTranscript', () => {
+describe('ZCodeAdapter.locateTranscript', () => {
   it('resolves by explicit sessionId', () => {
     const home = scratch();
     const handle = 'sess_discover-by-id-0001';
@@ -213,9 +214,9 @@ describe('discoverRolloutTranscript', () => {
     const path = join(rollout, `model-io-${handle}.jsonl`);
     writeFileSync(path, `${JSON.stringify({ response: { text: 'by-id' } })}\n`);
 
-    const found = discoverRolloutTranscript({ home, sessionId: handle });
+    const found = new ZCodeAdapter().locateTranscript({ home, sessionId: handle });
     assert.equal(found?.path, path);
-    assert.equal(found?.sessionId, handle);
+    assert.equal(found?.transcriptRef.handle, handle);
     assert.equal(found?.via, 'sessionId');
   });
 
@@ -237,12 +238,11 @@ describe('discoverRolloutTranscript', () => {
     writeFileSync(near, `${JSON.stringify({ response: { text: 'near' } })}\n`);
     utimesSync(near, new Date(end - 5_000), new Date(end - 5_000));
 
-    const found = discoverRolloutTranscript({
+    const found = new ZCodeAdapter().locateTranscript({
       home,
-      startTimeMs: start,
-      endTimeMs: end,
+      interrupted: { startTimeMs: start, endTimeMs: end },
     });
-    assert.equal(found?.sessionId, handle);
+    assert.equal(found?.transcriptRef.handle, handle);
     assert.equal(found?.path, near);
     assert.equal(found?.via, 'time-proximity');
   });
@@ -256,12 +256,83 @@ describe('discoverRolloutTranscript', () => {
     const ancient = Date.now() - 10 * 24 * 3600_000;
     utimesSync(path, new Date(ancient), new Date(ancient));
 
-    const found = discoverRolloutTranscript({
+    const found = new ZCodeAdapter().locateTranscript({
       home,
-      startTimeMs: Date.now() - 60_000,
-      endTimeMs: Date.now(),
-      slackMs: 60_000,
+      interrupted: { startTimeMs: Date.now() - 60_000, endTimeMs: Date.now() },
     });
     assert.equal(found, null);
+  });
+});
+
+describe('transcript ownership', () => {
+  function fixture(adapter: string, status = 'TIMEOUT_KILLED', sessionId?: string) {
+    const home = scratch();
+    const handle = 'sess_unrelated-zcode';
+    const rollout = join(home, '.zcode', 'cli', 'rollout');
+    mkdirSync(rollout, { recursive: true });
+    const path = join(rollout, `model-io-${handle}.jsonl`);
+    writeFileSync(path, JSON.stringify({ response: { text: 'another agents answer' } }));
+    const taskId = `task-ownership-${adapter}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const taskDir = getTaskDir(taskId);
+    mkdirSync(taskDir, { recursive: true });
+    scratchDirs.push(taskDir);
+    writeFileSync(join(taskDir, 'meta.json'), JSON.stringify({
+      taskId, adapter, status, sessionId,
+      startTime: Date.now() - 60_000, endTime: Date.now(),
+    }));
+    const record: RunRecord = {
+      taskId,
+      resolution: { taskId, finalText: { kind: 'text', value: 'own answer' } },
+      observation: { producedOutput: true, unmetPreconditions: [] },
+    };
+    return { home, taskId, record, path, handle };
+  }
+
+  for (const adapter of ['bash', 'shell', 'codex', 'unknown']) {
+    it(`${adapter} interrupted task never adopts a nearby ZCode transcript`, () => {
+      const { home, taskId, record } = fixture(adapter);
+      const repaired = repairTaskTranscript(taskId, record, { home });
+      assert.equal(repaired.transcriptPath, null);
+      assert.deepEqual(repaired.record, record);
+      const view = harvestTask(taskId, record, { home });
+      assert.equal(view.transcriptPath, null);
+      assert.equal(view.lastTurn?.text, 'own answer');
+    });
+  }
+
+  it('ZCode interrupted task can still discover and persist its transcript', () => {
+    const { home, taskId, record, path, handle } = fixture('zcode');
+    const repaired = repairTaskTranscript(taskId, record, { home });
+    assert.equal(repaired.transcriptPath, path);
+    assert.deepEqual(repaired.record?.resolution.transcriptRef, { provenance: 'zcode', handle });
+    assert.deepEqual(repaired.record?.resolution.sessionRef, { provenance: 'zcode', handle });
+    assert.equal(repaired.via, 'time-proximity');
+    assert.equal(readRunRecord(getTaskDir(taskId))?.transcriptPath, path);
+  });
+
+  it('completed ZCode task without a handle never guesses from timestamps', () => {
+    const { home, taskId, record } = fixture('zcode', 'COMPLETED');
+    assert.equal(repairTaskTranscript(taskId, record, { home }).transcriptPath, null);
+  });
+
+  it('a missing explicit ZCode session never falls back to another session', () => {
+    const { home, taskId, record } = fixture('zcode', 'KILLED', 'sess_missing');
+    assert.equal(repairTaskTranscript(taskId, record, { home }).transcriptPath, null);
+  });
+
+  it('foreign refs cannot redirect discovery into ZCode storage', () => {
+    const { home, taskId, record, handle } = fixture('codex');
+    const foreignRecord = {
+      ...record, resolution: { ...record.resolution, transcriptRef: { provenance: 'zcode', handle } },
+    };
+    assert.equal(harvestTask(taskId, foreignRecord, { home }).transcriptPath, null);
+  });
+
+  it('a Codex ref without metadata never falls back to a matching ZCode session', () => {
+    const { home, record, handle } = fixture('zcode');
+    const foreignRecord = {
+      ...record, resolution: { ...record.resolution, transcriptRef: { provenance: 'codex', handle } },
+    };
+    assert.equal(harvestTask('missing-task-metadata', foreignRecord, { home }).transcriptPath, null);
   });
 });

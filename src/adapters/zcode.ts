@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { WorkerAdapter, AdapterCommandSpec, AdapterCommandResult, AdapterEnvDelta } from './base.ts';
 import type { AdapterRawOutput, AdapterTranslation, AdapterUsage, FinalText } from './contract.ts';
+import { locateZcodeTranscript } from './zcode-transcript.ts';
 import {
   PROVIDER_CONFIG_PRECONDITION,
   PreconditionUnmetError,
@@ -43,6 +44,7 @@ export function resolveZcodeCliPath(explicit?: string): { ok: true; path: string
 export class ZCodeAdapter implements WorkerAdapter {
   readonly name = 'zcode';
   readonly description = 'ZCode headless CLI subagent with structured json and resume rounds';
+  readonly locateTranscript = locateZcodeTranscript;
 
   /**
    * The CLI cannot start without its provider config: without one it exits 0

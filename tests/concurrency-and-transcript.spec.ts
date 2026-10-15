@@ -31,7 +31,10 @@ import {
 } from '../src/runner/detached.ts';
 import { harvestTask } from '../src/runner/harvest.ts';
 import { readRunRecord, writeRunRecord, type RunRecord } from '../src/runner/settlement.ts';
-import { BashAdapter } from '../src/adapters/bash.ts';
+import { ZCodeAdapter } from '../src/adapters/zcode.ts';
+import { adapterForSettlement } from '../src/adapters/registry.ts';
+import { locateRunTranscript } from '../src/runner/transcript.ts';
+import type { WorkerAdapter } from '../src/adapters/base.ts';
 
 const FIXTURE = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -154,6 +157,7 @@ describe('spawnDetachedTask concurrent cap', () => {
         taskId: fakeId,
         label: 'cap-plant',
         prompt: 'plant',
+        pid: process.pid,
         status: 'RUNNING',
         startTime: Date.now(),
         timeout: 60,
@@ -186,6 +190,71 @@ describe('spawnDetachedTask concurrent cap', () => {
 });
 
 describe('transcriptPath persistence', () => {
+  it('keeps a session handle in metadata even without on-disk transcript support', () => {
+    const taskId = `task-session-only-${Date.now()}`;
+    const taskDir = getTaskDir(taskId);
+    mkdirSync(taskDir, { recursive: true });
+    runDirs.push(taskDir);
+    writeFileSync(join(taskDir, 'meta.json'), JSON.stringify({ taskId, adapter: 'codex' }));
+    settleTask(taskId, {
+      status: 'COMPLETED', adapter: adapterForSettlement('codex'),
+      output: '{"type":"thread.started","thread_id":"opaque-codex-session"}\n'
+        + '{"type":"item.completed","item":{"type":"agent_message","text":"answer"}}\n',
+      exitCode: 0,
+    });
+    const meta = JSON.parse(readFileSync(join(taskDir, 'meta.json'), 'utf8'));
+    assert.equal(meta.sessionId, 'opaque-codex-session');
+  });
+
+  for (const adapterName of ['bash', 'codex', 'unknown']) {
+    it(`settlement of interrupted ${adapterName} never adopts ZCode storage`, () => {
+      const home = scratch('settle-home-');
+      const rollout = join(home, '.zcode', 'cli', 'rollout');
+      mkdirSync(rollout, { recursive: true });
+      writeFileSync(join(rollout, 'model-io-sess_other.jsonl'), '{"response":{"text":"other"}}');
+      const taskId = `task-settle-owner-${adapterName}-${Date.now()}`;
+      const taskDir = getTaskDir(taskId);
+      mkdirSync(taskDir, { recursive: true });
+      runDirs.push(taskDir);
+      writeFileSync(join(taskDir, 'meta.json'), JSON.stringify({
+        taskId, adapter: adapterName, status: 'KILLED',
+        startTime: Date.now() - 1000, endTime: Date.now(),
+      }));
+      const record = withEnv({ HOME: home }, () => settleTask(taskId, {
+        status: 'KILLED', adapter: adapterForSettlement(adapterName), output: '',
+      }));
+      assert.equal(record.transcriptPath, undefined);
+      assert.equal(record.resolution.transcriptRef, undefined);
+      assert.equal(record.resolution.sessionRef, undefined);
+      assert.equal(readRunRecord(taskDir)?.transcriptPath, undefined);
+    });
+  }
+
+  it('settlement uses the supplied adapter capability without knowing its layout', () => {
+    const taskId = `task-custom-transcript-${Date.now()}`;
+    const taskDir = getTaskDir(taskId);
+    mkdirSync(taskDir, { recursive: true });
+    runDirs.push(taskDir);
+    const path = join(scratch(), 'custom-conversation.json');
+    writeFileSync(path, '[]');
+    const adapter: WorkerAdapter = {
+      name: 'custom', description: 'test adapter with independent storage',
+      buildCommand: () => ({ cmd: 'unused', args: [] }),
+      locateTranscript: () => ({
+        path, via: 'custom-storage',
+        transcriptRef: { provenance: 'custom', handle: 'opaque-transcript' },
+        sessionRef: { provenance: 'custom', handle: 'opaque-session' },
+      }),
+    };
+    const record = settleTask(taskId, { status: 'COMPLETED', adapter, output: 'answer' });
+    assert.equal(record.transcriptPath, path);
+    assert.equal(record.resolution.transcriptRef?.handle, 'opaque-transcript');
+    assert.equal(record.resolution.sessionRef?.handle, 'opaque-session');
+    assert.equal(readRunRecord(taskDir)?.transcriptPath, path);
+    // A persisted path remains usable even without that adapter installed.
+    assert.equal(locateRunTranscript(record, { adapter: 'custom' }).transcriptPath, path);
+  });
+
   it('settleTask writes transcriptPath into resolution.json when file exists', () => {
     const home = scratch('home-');
     const handle = 'sess_persist-path-0001';
@@ -211,26 +280,13 @@ describe('transcriptPath persistence', () => {
         startTime: Date.now(),
         endTime: Date.now(),
         timeout: 60,
-        adapter: 'bash',
+        adapter: 'zcode',
         cwd: process.cwd(),
         exitCode: 0,
       }),
     );
 
-    // Monkey-patch via settleRun path: craft translation with transcriptRef by
-    // calling settleTask with a custom adapter.translate.
-    const adapter = new BashAdapter();
-    const originalTranslate = adapter.translate?.bind(adapter);
-    adapter.translate = (raw) => {
-      const base = originalTranslate?.(raw) ?? {
-        producedOutput: true,
-        finalText: { kind: 'text' as const, value: raw.output },
-      };
-      return {
-        ...base,
-        transcriptRef: { provenance: 'zcode', handle },
-      };
-    };
+    const adapter = new ZCodeAdapter();
 
     const prevHome = process.env.HOME;
     process.env.HOME = home;
@@ -238,7 +294,7 @@ describe('transcriptPath persistence', () => {
       const record = settleTask(taskId, {
         status: 'COMPLETED',
         adapter,
-        output: 'hello from bash',
+        output: JSON.stringify({ sessionId: handle, response: 'persisted-last' }),
         exitCode: 0,
       });
       assert.equal(record.transcriptPath, transcriptFile);

@@ -14,12 +14,12 @@
  * @module
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { FinalText, TranscriptRef } from '../adapters/contract.ts';
+import type { FinalText } from '../adapters/contract.ts';
 import { writeRunRecord, type RunRecord } from './settlement.ts';
-import { getTaskDir } from './detached.ts';
+import { getTaskDir, readTaskMeta } from './detached.ts';
+import { locateRunTranscript, type LocatedRunTranscript } from './transcript.ts';
 
 /** Env var: override last-turn display cap (default {@link DEFAULT_LAST_TURN_CAP}). */
 export const LAST_TURN_CAP_ENV = 'AGENT_HUB_LAST_TURN_CAP';
@@ -243,275 +243,27 @@ function extractFromMessages(messages: readonly unknown[]): string | null {
   return null;
 }
 
-/**
- * Resolve an on-disk conversation JSON/JSONL path from a transcriptRef, without
- * calling the live CLI. Returns `null` when nothing is on disk yet.
- */
-export function resolveTranscriptPath(
-  ref: TranscriptRef | undefined,
-  options: { readonly home?: string } = {},
-): string | null {
-  if (ref === undefined) return null;
-  if (ref.provenance !== 'zcode') return null;
-
-  const home = options.home ?? homedir();
-  const handle = ref.handle;
-  if (typeof handle !== 'string' || handle.length === 0) return null;
-
-  const candidates: string[] = [
-    join(home, '.zcode', 'cli', 'rollout', `model-io-${handle}.jsonl`),
-    join(home, '.zcode', 'cli', 'agents', handle, 'transcript.jsonl'),
-  ];
-
-  for (const path of candidates) {
-    if (existsSync(path) && statSync(path).isFile()) return path;
-  }
-
-  // Nested agent dirs: ~/.zcode/cli/agents/<parent>/agent_*/transcript.jsonl
-  // where metadata.childSessionId === handle, or the parent dir is the handle.
-  const agentsRoot = join(home, '.zcode', 'cli', 'agents');
-  if (!existsSync(agentsRoot)) return null;
-
-  const direct = join(agentsRoot, handle);
-  const nested = findTranscriptUnder(direct);
-  if (nested !== null) return nested;
-
-  // Scan a shallow set of sess_* dirs for metadata.childSessionId match.
-  try {
-    for (const entry of readdirSync(agentsRoot, { withFileTypes: true })) {
-      if (!entry.isDirectory() || !entry.name.startsWith('sess_')) continue;
-      const sessDir = join(agentsRoot, entry.name);
-      for (const child of readdirSync(sessDir, { withFileTypes: true })) {
-        if (!child.isDirectory() || !child.name.startsWith('agent_')) continue;
-        const agentDir = join(sessDir, child.name);
-        const metaPath = join(agentDir, 'metadata.json');
-        if (!existsSync(metaPath)) continue;
-        try {
-          const meta = JSON.parse(readFileSync(metaPath, 'utf8')) as { childSessionId?: unknown };
-          if (meta.childSessionId === handle) {
-            const transcript = join(agentDir, 'transcript.jsonl');
-            if (existsSync(transcript)) return transcript;
-          }
-        } catch {
-          // ignore unreadable metadata
-        }
-      }
-    }
-  } catch {
-    return null;
-  }
-
-  return null;
-}
-
-function findTranscriptUnder(dir: string): string | null {
-  if (!existsSync(dir) || !statSync(dir).isDirectory()) return null;
-  const direct = join(dir, 'transcript.jsonl');
-  if (existsSync(direct)) return direct;
-  try {
-    for (const child of readdirSync(dir, { withFileTypes: true })) {
-      if (!child.isDirectory()) continue;
-      const nested = join(dir, child.name, 'transcript.jsonl');
-      if (existsSync(nested)) return nested;
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
 function textFromFinalText(finalText: FinalText | undefined): string | null {
   if (finalText === undefined) return null;
   if (finalText.kind !== 'text') return null;
   return finalText.value.length > 0 ? finalText.value : null;
 }
 
-/** Filename pattern: model-io-sess_<uuid>.jsonl → sess_<uuid> */
-const ROLLOUT_FILE_RE = /^model-io-(sess_[A-Za-z0-9_-]+)\.jsonl$/;
-
-/** Default slack around task window when matching rollout mtime (45 minutes). */
-export const ROLLOUT_PROXIMITY_SLACK_MS = 45 * 60 * 1000;
-
-export interface DiscoverRolloutOptions {
-  readonly home?: string;
-  /** Explicit session id (meta.sessionId or transcriptRef.handle). */
-  readonly sessionId?: string | null;
-  /** Task start epoch-ms (meta.startTime). */
-  readonly startTimeMs?: number | null;
-  /** Task end epoch-ms (meta.endTime); falls back to start + timeout when absent. */
-  readonly endTimeMs?: number | null;
-  /** How far outside [start, end] mtime may fall (default {@link ROLLOUT_PROXIMITY_SLACK_MS}). */
-  readonly slackMs?: number;
-}
-
-export interface DiscoveredRollout {
-  readonly path: string;
-  readonly sessionId: string;
-  /** How the path was chosen. */
-  readonly via: 'sessionId' | 'time-proximity';
-}
-
-/**
- * Discover an on-disk model-io JSONL when transcriptRef is missing (common for
- * TIMEOUT_KILLED: the CLI never printed a result object with sessionId).
- *
- * Preference:
- *   1. `sessionId` → same paths as {@link resolveTranscriptPath}
- *   2. Scan `~/.zcode/cli/rollout/model-io-sess_*.jsonl` whose mtime falls near
- *      the task window; pick the closest to endTime (then startTime).
- */
-export function discoverRolloutTranscript(
-  options: DiscoverRolloutOptions = {},
-): DiscoveredRollout | null {
-  const home = options.home ?? homedir();
-  const sessionId = typeof options.sessionId === 'string' && options.sessionId.length > 0
-    ? options.sessionId
-    : undefined;
-
-  if (sessionId !== undefined) {
-    const path = resolveTranscriptPath({ provenance: 'zcode', handle: sessionId }, { home });
-    if (path !== null) return { path, sessionId, via: 'sessionId' };
-  }
-
-  const start = typeof options.startTimeMs === 'number' && Number.isFinite(options.startTimeMs)
-    ? options.startTimeMs
-    : null;
-  const end = typeof options.endTimeMs === 'number' && Number.isFinite(options.endTimeMs)
-    ? options.endTimeMs
-    : start;
-  if (start === null || end === null) return null;
-
-  const slack = options.slackMs ?? ROLLOUT_PROXIMITY_SLACK_MS;
-  const windowLo = start - slack;
-  const windowHi = end + slack;
-  const rolloutDir = join(home, '.zcode', 'cli', 'rollout');
-  if (!existsSync(rolloutDir)) return null;
-
-  type Cand = { path: string; sessionId: string; mtimeMs: number; dist: number };
-  const cands: Cand[] = [];
-  try {
-    for (const name of readdirSync(rolloutDir)) {
-      const match = ROLLOUT_FILE_RE.exec(name);
-      if (match === null) continue;
-      const full = join(rolloutDir, name);
-      let mtimeMs: number;
-      try {
-        const st = statSync(full);
-        if (!st.isFile()) continue;
-        mtimeMs = st.mtimeMs;
-      } catch {
-        continue;
-      }
-      if (mtimeMs < windowLo || mtimeMs > windowHi) continue;
-      // Prefer files whose mtime is closest to the task end (kill often lands near last write).
-      const dist = Math.abs(mtimeMs - end);
-      cands.push({ path: full, sessionId: match[1], mtimeMs, dist });
-    }
-  } catch {
-    return null;
-  }
-
-  if (cands.length === 0) return null;
-  cands.sort((a, b) => a.dist - b.dist || b.mtimeMs - a.mtimeMs);
-  const best = cands[0];
-  return { path: best.path, sessionId: best.sessionId, via: 'time-proximity' };
-}
-
-/** Best-effort read of meta.json fields used for rollout discovery / repair. */
-function readMetaHints(taskId: string): {
-  startTime?: number;
-  endTime?: number;
-  sessionId?: string;
-  status?: string;
-} {
-  const metaPath = join(getTaskDir(taskId), 'meta.json');
-  if (!existsSync(metaPath)) return {};
-  try {
-    const meta = JSON.parse(readFileSync(metaPath, 'utf8')) as Record<string, unknown>;
-    const out: { startTime?: number; endTime?: number; sessionId?: string; status?: string } = {};
-    if (typeof meta['startTime'] === 'number') out.startTime = meta['startTime'];
-    if (typeof meta['endTime'] === 'number') out.endTime = meta['endTime'];
-    if (typeof meta['sessionId'] === 'string' && meta['sessionId'].length > 0) {
-      out.sessionId = meta['sessionId'];
-    }
-    if (typeof meta['status'] === 'string') out.status = meta['status'];
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-/**
- * Repair TIMEOUT (or any settled) tasks that lack transcriptRef / transcriptPath:
- * discover rollout JSONL, persist path + refs on the run record, and return the path.
- * Does not invent turns — only links an existing on-disk file.
- */
-export function repairTimeoutTranscript(
+/** Locate through the task's adapter and persist any newly discovered refs/path. */
+export function repairTaskTranscript(
   taskId: string,
   record: RunRecord | null,
   options: { readonly home?: string } = {},
-): { record: RunRecord | null; transcriptPath: string | null; sessionId: string | null; via: string | null } {
-  const home = options.home ?? homedir();
-  const hints = readMetaHints(taskId);
-  const existingPath = typeof record?.transcriptPath === 'string' && record.transcriptPath.length > 0
-    && existsSync(record.transcriptPath)
-    ? record.transcriptPath
-    : null;
-  if (existingPath !== null) {
-    const handle = record?.resolution.transcriptRef?.handle
-      ?? record?.resolution.sessionRef?.handle
-      ?? hints.sessionId
-      ?? null;
-    return { record, transcriptPath: existingPath, sessionId: handle, via: 'existing' };
-  }
-
-  const refHandle = record?.resolution.transcriptRef?.handle
-    ?? record?.resolution.sessionRef?.handle
-    ?? hints.sessionId;
-
-  // Time-proximity scan is only for killed/timeout runs (no CLI result object).
-  // Never invent a handle for COMPLETED/FAILED/precondition-unmet from nearby files.
-  const allowTimeProximity = hints.status === 'TIMEOUT_KILLED' || hints.status === 'KILLED'
-    || record?.resolution.stopCause === 'timeout'
-    || record?.resolution.stopCause === 'cancelled';
-
-  const discovered = discoverRolloutTranscript({
-    home,
-    sessionId: refHandle,
-    ...allowTimeProximity
-      ? { startTimeMs: hints.startTime, endTimeMs: hints.endTime }
-      : {},
-  });
-
-  if (discovered === null) {
-    return { record, transcriptPath: null, sessionId: null, via: null };
-  }
-
-  let next: RunRecord | null = record;
-  if (record !== null) {
-    const resolution = {
-      ...record.resolution,
-      ...record.resolution.transcriptRef === undefined
-        ? { transcriptRef: { provenance: 'zcode' as const, handle: discovered.sessionId } }
-        : {},
-      ...record.resolution.sessionRef === undefined
-        ? { sessionRef: { provenance: 'zcode' as const, handle: discovered.sessionId } }
-        : {},
-    };
-    next = { ...record, resolution, transcriptPath: discovered.path };
+): LocatedRunTranscript {
+  const located = locateRunTranscript(record, readTaskMeta(taskId) ?? {}, options);
+  if (located.record !== null && located.record !== record) {
     try {
-      writeRunRecord(getTaskDir(taskId), next);
+      writeRunRecord(getTaskDir(taskId), located.record);
     } catch {
-      // best-effort
+      // Best effort: presentation still uses the located path.
     }
   }
-
-  return {
-    record: next,
-    transcriptPath: discovered.path,
-    sessionId: discovered.sessionId,
-    via: discovered.via,
-  };
+  return located;
 }
 
 /**
@@ -524,31 +276,7 @@ export function harvestTask(
   options: { readonly home?: string; readonly cap?: number } = {},
 ): HarvestView {
   const cap = options.cap ?? resolveLastTurnCap();
-  let working = record;
-  const ref = working?.resolution.transcriptRef;
-  const home = options.home;
-
-  // Prefer path already persisted at settle/harvest; re-resolve when missing/stale.
-  let transcriptPath: string | null = null;
-  if (typeof working?.transcriptPath === 'string' && working.transcriptPath.length > 0
-      && existsSync(working.transcriptPath)) {
-    transcriptPath = working.transcriptPath;
-  } else {
-    transcriptPath = resolveTranscriptPath(ref, { home });
-    // TIMEOUT / kill often leave no transcriptRef — discover model-io by sessionId or time.
-    if (transcriptPath === null) {
-      const repaired = repairTimeoutTranscript(taskId, working, { home });
-      transcriptPath = repaired.transcriptPath;
-      if (repaired.record !== null) working = repaired.record;
-    } else if (working !== null && working.transcriptPath !== transcriptPath) {
-      // Persist when harvest finds a path settle missed (file may appear after exit).
-      try {
-        writeRunRecord(getTaskDir(taskId), { ...working, transcriptPath });
-      } catch {
-        // best-effort; board still gets the in-memory path
-      }
-    }
-  }
+  const { record: working, transcriptPath } = repairTaskTranscript(taskId, record, options);
 
   let rawText: string | null = null;
   let source: LastTurnSource = 'finalText';
