@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, openSync, closeSync, fstatSync, readSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { atomicWrite, readJson, withFileLock } from './file-storage.ts';
 import type { TaskMeta } from './task-types.ts';
@@ -38,6 +38,21 @@ export class TaskStore {
       atomicWrite(join(dir, 'meta.json'), JSON.stringify(updated, null, 2));
       return updated;
     });
+  }
+  readReport(id: string): string {
+    try { return readFileSync(join(this.dir(id), 'report.md'), 'utf8'); } catch { return ''; }
+  }
+  /** Read a bounded suffix, leaving room for four-byte UTF-8 characters. */
+  readLogTail(id: string, chars = 5000): string {
+    let fd: number | undefined;
+    try {
+      fd = openSync(join(this.dir(id), 'raw.log'), 'r');
+      const size = fstatSync(fd).size;
+      const length = Math.min(size, Math.max(0, chars) * 4);
+      const buffer = Buffer.alloc(length);
+      const count = readSync(fd, buffer, 0, length, size - length);
+      return chars > 0 ? buffer.subarray(0, count).toString('utf8').slice(-chars) : '';
+    } catch { return ''; } finally { if (fd !== undefined) closeSync(fd); }
   }
   withDispatchLock<T>(action: () => T): T {
     this.ensure(); return withFileLock(join(this.runsDir, '.dispatch.lock'), action);

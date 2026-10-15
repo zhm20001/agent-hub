@@ -59,3 +59,13 @@ test('parallel dispatcher processes share one admission lock and cannot reuse ID
     assert.equal(results.filter(s => s.trim() === 'REFUSED').length, 3);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test('a dead dispatcher lock is recovered before admitting another task', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hub-dead-dispatch-'));
+  const store = new TaskStore(root);
+  try {
+    writeFileSync(join(root, '.dispatch.lock'), JSON.stringify({ pid: 2147483646 }));
+    assert.equal(store.withDispatchLock(() => 'admitted'), 'admitted');
+    assert.equal(existsSync(join(root, '.dispatch.lock')), false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

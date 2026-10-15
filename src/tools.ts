@@ -1,9 +1,7 @@
-import { defaultTaskStore } from './runner/task-store.ts';
+import { getTaskDetail, listTasks } from './runner/task-queries.ts';
 import {
-  ensureRunsDir,
   spawnDetachedTask,
   readTaskMeta,
-  readResolution,
   terminateTask,
 } from './runner/detached.ts';
 import { resolveDefaultTimeout } from './runner/timeout-policy.ts';
@@ -106,11 +104,7 @@ export function registerSwarmTools(ctx?: DshContext, activeAgentGetter?: () => D
       },
     },
     async execute(args: { taskId: string }) {
-      const meta = readTaskMeta(args.taskId);
-      if (!meta) return { error: `Task ${args.taskId} not found` };
-      // The closing record is the platform's answer to "did this run end, why did
-      // it stop, where are the handles" — it carries no verdict (ADR-0002).
-      return { ...meta, closingRecord: readResolution(args.taskId) };
+      return getTaskDetail(args.taskId) ?? { error: `Task ${args.taskId} not found` };
     },
   });
 
@@ -120,9 +114,7 @@ export function registerSwarmTools(ctx?: DshContext, activeAgentGetter?: () => D
     description: 'List all dispatched swarm subagent tasks with their status, tickets, and runtimes.',
     parameters: {},
     async execute() {
-      ensureRunsDir();
-      const tasks = defaultTaskStore.list();
-      return tasks.sort((a, b) => b.startTime - a.startTime);
+      return listTasks({ includeArchived: true });
     },
   });
 }

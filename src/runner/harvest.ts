@@ -1,4 +1,4 @@
-import { readTranscriptDocument, parseTranscriptDocument, lastAssistantText } from './transcript-document.ts';
+import { readTranscriptDocument, parseTranscriptDocument, lastAssistantText, type TranscriptDocument } from './transcript-document.ts';
 /**
  * Mechanical harvest for the board Report view (ADR-0002).
  *
@@ -138,22 +138,19 @@ export function harvestTask(
   const cap = options.cap ?? resolveLastTurnCap();
   const { record: working, transcriptPath } = repairTaskTranscript(taskId, record, options);
 
-  let rawText: string | null = null;
-  let source: LastTurnSource = 'finalText';
+  const document = transcriptPath ? readTranscriptDocument(transcriptPath, readTaskMeta(taskId)?.adapter) : null;
+  return projectHarvest(working, transcriptPath, document, cap);
+}
 
-  if (transcriptPath !== null) {
-    try {
-      const document = readTranscriptDocument(transcriptPath, readTaskMeta(taskId)?.adapter);
-      const extracted = document ? lastAssistantText(document) : null;
-      if (extracted !== null && extracted.length > 0) {
-        rawText = extracted;
-        source = 'transcript';
-      }
-    } catch {
-      // fall through to finalText
-    }
-  }
-
+/** Presentation from already parsed facts. No disk reads or writes. */
+export function projectHarvest(
+  working: RunRecord | null,
+  transcriptPath: string | null,
+  document: TranscriptDocument | null,
+  cap: number = resolveLastTurnCap(),
+): HarvestView {
+  let rawText = document ? lastAssistantText(document) : null;
+  let source: LastTurnSource = rawText === null ? 'finalText' : 'transcript';
   if (rawText === null) {
     rawText = textFromFinalText(working?.resolution.finalText);
     source = 'finalText';

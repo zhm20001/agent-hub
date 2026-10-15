@@ -1,27 +1,19 @@
-import { defaultTaskStore } from './runner/task-store.ts';
+import { getTaskDetail, getTaskConversation, getTaskTranscript, listTasks } from './runner/task-queries.ts';
 import express, { type Request, type Response } from 'express';
 import cors from 'cors';
 import { createServer as createHttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { existsSync, readFileSync, statSync, createReadStream } from 'node:fs';
+import { existsSync, statSync, createReadStream } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { exec, execSync } from 'node:child_process';
 import {
   SWARM_RUNS_DIR,
-  ensureRunsDir,
   spawnDetachedTask,
   readTaskMeta,
-  readResolution,
   updateTaskMeta,
   terminateTask,
   getTaskDir,
-  type TaskMeta,
-  filterBoardTasks,
 } from './runner/detached.ts';
-import { harvestTask, repairTaskTranscript, resolutionJsonPath } from './runner/harvest.ts';
-import { reconcileOrphanRunningTasks, reconcileOrphanTask } from './runner/reconcile.ts';
-import { readTranscriptDocument, summarizeDocument } from './runner/transcript-document.ts';
-import { resolveModelInfo } from './runner/model-info.ts';
 import { TtlWatchdog } from './runner/ttl.ts';
 import { SwarmRunsWatcher, type TaskCompletionCallback } from './watcher.ts';
 import { CwdNotAllowedError } from './runner/task-roots.ts';
@@ -39,21 +31,9 @@ function createApp() {
    * GET /api/tasks - list all tasks
    */
   app.get('/api/tasks', (req: Request, res: Response) => {
-    ensureRunsDir();
     try {
-      // Board load: settle RUNNING metas whose child PID is already gone.
-      reconcileOrphanRunningTasks();
-      const includeArchived =
-        req.query.includeArchived === '1' || req.query.includeArchived === 'true';
-      const tasks = defaultTaskStore.list().map(meta => ({
-        ...meta, closingRecord: readResolution(meta.taskId),
-      }));
-      const visible = filterBoardTasks(tasks, { includeArchived });
-      visible.sort((a, b) => b.startTime - a.startTime);
-      res.json(visible);
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
+      res.json(listTasks({ includeArchived: req.query.includeArchived === '1' || req.query.includeArchived === 'true' }));
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
   /**
@@ -97,63 +77,9 @@ function createApp() {
    * GET /api/tasks/:id - get task details, meta and report
    */
   app.get('/api/tasks/:id', (req: Request, res: Response) => {
-    const { id } = req.params;
-    // Detail fetch: repair this task if RUNNING but process gone.
-    reconcileOrphanTask(id);
-    const meta = readTaskMeta(id);
-    if (!meta) {
-      return res.status(404).json({ error: 'Task not found' });
-    }
-
-    const reportPath = join(getTaskDir(id), 'report.md');
-    let report = '';
-    if (existsSync(reportPath)) {
-      try {
-        report = readFileSync(reportPath, 'utf8');
-      } catch {}
-    }
-
-    const rawLogPath = join(getTaskDir(id), 'raw.log');
-    let rawLog = '';
-    if (existsSync(rawLogPath)) {
-      try {
-        rawLog = readFileSync(rawLogPath, 'utf8');
-      } catch {}
-    }
-
-    // Closing record = mechanical facts from resolution.json (ADR-0002: not a verdict).
-    // Harvest = last-turn projection + on-disk transcript path (mechanical, not a verdict).
-    let closingRecord = readResolution(id);
-    const harvest = harvestTask(id, closingRecord);
-    // Re-read resolution after harvest may have repaired transcriptPath/refs.
-    closingRecord = readResolution(id) ?? closingRecord;
-
-    // Backfill model/provider + sessionId for TIMEOUT cards when model-io is discoverable.
-    let metaOut = meta;
-    if (harvest.transcriptPath) {
-      const patch: Partial<TaskMeta> = {};
-      if (!meta.modelId && !meta.providerId) {
-        const info = resolveModelInfo({ transcriptPath: harvest.transcriptPath, adapter: meta.adapter });
-        if (info?.modelId) patch.modelId = info.modelId;
-        if (info?.providerId) patch.providerId = info.providerId;
-      }
-      const handle = closingRecord?.resolution.transcriptRef?.handle
-        ?? closingRecord?.resolution.sessionRef?.handle;
-      if (handle && !meta.sessionId) patch.sessionId = handle;
-      if (Object.keys(patch).length > 0) {
-        metaOut = updateTaskMeta(id, patch) ?? { ...meta, ...patch };
-      }
-    }
-
-    res.json({
-      ...metaOut,
-      report,
-      rawLogTail: rawLog.slice(-5000),
-      closingRecord,
-      lastTurn: harvest.lastTurn,
-      transcriptPath: harvest.transcriptPath,
-      resolutionPath: resolutionJsonPath(id),
-    });
+    const detail = getTaskDetail(req.params.id);
+    if (!detail) return res.status(404).json({ error: 'Task not found' });
+    res.json(detail);
   });
 
   /**
@@ -360,17 +286,9 @@ function createApp() {
    * file manager (Finder on macOS). Local demo helper; does not call the live CLI.
    */
   app.post('/api/tasks/:id/reveal-transcript', (req: Request, res: Response) => {
-    const { id } = req.params;
-    const meta = readTaskMeta(id);
-    if (!meta) {
-      return res.status(404).json({ error: 'Task not found' });
-    }
-
-    const closingRecord = readResolution(id);
-    const harvest = harvestTask(id, closingRecord);
-    const target = harvest.transcriptPath
-      ?? resolutionJsonPath(id)
-      ?? null;
+    const transcript = getTaskTranscript(req.params.id);
+    if (!transcript) return res.status(404).json({ error: 'Task not found' });
+    const target = transcript.transcriptPath ?? transcript.resolutionPath;
 
     if (target === null) {
       return res.status(404).json({
@@ -387,7 +305,7 @@ function createApp() {
     res.json({
       success: true,
       path: target,
-      kind: harvest.transcriptPath === target ? 'transcript' : 'resolution',
+      kind: transcript.transcriptPath === target ? 'transcript' : 'resolution',
     });
   });
 
@@ -397,56 +315,9 @@ function createApp() {
    * the server so the browser never downloads a multi‑MB model-io JSONL.
    */
   app.get('/api/tasks/:id/conversation', (req: Request, res: Response) => {
-    const { id } = req.params;
-    const meta = readTaskMeta(id);
-    if (!meta) {
-      return res.status(404).json({ error: 'Task not found' });
-    }
-
-    let closingRecord = readResolution(id);
-    const repaired = repairTaskTranscript(id, closingRecord);
-    if (repaired.record !== null) closingRecord = repaired.record;
-    if (repaired.sessionId && !meta.sessionId) {
-      updateTaskMeta(id, { sessionId: repaired.sessionId });
-    }
-
-    const harvest = harvestTask(id, closingRecord);
-    const transcriptPath = harvest.transcriptPath;
-
-    // Backfill model/provider when still missing (TIMEOUT cards).
-    if ((!meta.modelId && !meta.providerId) && typeof transcriptPath === 'string') {
-      const info = resolveModelInfo({ transcriptPath, adapter: meta.adapter });
-      if (info !== null) {
-        updateTaskMeta(id, {
-          ...info.modelId ? { modelId: info.modelId } : {},
-          ...info.providerId ? { providerId: info.providerId } : {},
-        });
-      }
-    }
-
-    if (transcriptPath === null || !existsSync(transcriptPath)) {
-      return res.json({
-        turns: [],
-        transcriptPath: null,
-        emptyReason: meta.status === 'TIMEOUT_KILLED'
-          ? 'timeout-no-transcript'
-          : 'no-transcript',
-        sessionId: repaired.sessionId ?? meta.sessionId ?? null,
-      });
-    }
-
-    const document = readTranscriptDocument(transcriptPath, meta.adapter);
-    if (document === null) return res.status(500).json({ error: 'Transcript could not be read' });
-    const turns = summarizeDocument(document);
-    res.json({
-      turns,
-      transcriptPath,
-      emptyReason: turns.length === 0 ? 'empty-transcript' : null,
-      sessionId: repaired.sessionId
-        ?? closingRecord?.resolution.transcriptRef?.handle
-        ?? meta.sessionId
-        ?? null,
-    });
+    const conversation = getTaskConversation(req.params.id);
+    if (!conversation) return res.status(404).json({ error: 'Task not found' });
+    res.json(conversation);
   });
 
   /**
@@ -454,15 +325,9 @@ function createApp() {
    * in-browser download/view when Finder reveal is unavailable.
    */
   app.get('/api/tasks/:id/transcript-file', (req: Request, res: Response) => {
-    const { id } = req.params;
-    const meta = readTaskMeta(id);
-    if (!meta) {
-      return res.status(404).json({ error: 'Task not found' });
-    }
-
-    const closingRecord = readResolution(id);
-    const harvest = harvestTask(id, closingRecord);
-    const target = harvest.transcriptPath ?? resolutionJsonPath(id);
+    const transcript = getTaskTranscript(req.params.id);
+    if (!transcript) return res.status(404).json({ error: 'Task not found' });
+    const target = transcript.transcriptPath ?? transcript.resolutionPath;
     if (target === null || !existsSync(target)) {
       return res.status(404).json({ error: 'No on-disk transcript or resolution JSON' });
     }
