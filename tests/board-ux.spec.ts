@@ -1,3 +1,5 @@
+import { parseZcodeTranscript } from '../src/adapters/transcript-format.ts';
+import { summarizeDocument } from '../src/shared/transcript.ts';
 /**
  * Board UX helpers: Shanghai time, Built-in log noise filter, light transcript summary.
  * Fixtures only — no live CLI.
@@ -11,7 +13,6 @@ import {
   BUILTIN_NOISE_RE,
   filterLogNoise,
   formatShanghaiAbsolute,
-  summarizeTranscript,
 } from '../src/web/lib/board-ux.ts';
 
 describe('formatShanghaiAbsolute', () => {
@@ -51,14 +52,14 @@ describe('filterLogNoise', () => {
   });
 });
 
-describe('summarizeTranscript', () => {
+describe('normalized conversation summary', () => {
   it('summarizes transcript.jsonl turn_started / turn_complete', () => {
     const jsonl = [
       JSON.stringify({ type: 'turn_started', payload: { input: 'Please review the diff' } }),
       JSON.stringify({ type: 'model_complete', payload: { content: 'mid', stopReason: 'tool-calls' } }),
       JSON.stringify({ type: 'turn_complete', payload: { response: 'Looks good overall.' } }),
     ].join('\n');
-    const turns = summarizeTranscript(jsonl);
+    const turns = summarizeDocument(parseZcodeTranscript(jsonl));
     assert.equal(turns.length, 2);
     assert.equal(turns[0].role, 'user');
     assert.match(turns[0].text, /Please review/);
@@ -79,7 +80,7 @@ describe('summarizeTranscript', () => {
       },
       response: { text: 'ok' },
     });
-    const turns = summarizeTranscript(line);
+    const turns = summarizeDocument(parseZcodeTranscript(line));
     assert.ok(turns.some((t) => t.role === 'user' && t.text.includes('Reply with ok')));
     assert.ok(turns.some((t) => t.role === 'assistant' && t.text === 'ok'));
   });
@@ -89,7 +90,7 @@ describe('summarizeTranscript', () => {
       { role: 'user', parts: [{ type: 'text', text: 'hi' }] },
       { role: 'assistant', parts: [{ type: 'text', text: 'hello there' }] },
     ]);
-    const turns = summarizeTranscript(doc);
+    const turns = summarizeDocument(parseZcodeTranscript(doc));
     assert.deepEqual(
       turns.map((t) => t.role),
       ['user', 'assistant'],

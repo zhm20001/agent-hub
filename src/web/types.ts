@@ -71,6 +71,3 @@ export interface VcsData {
   cwd: string;
   error?: string;
 }
-
-/** @deprecated Use VcsData */
-export type DiffData = VcsData;

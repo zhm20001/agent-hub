@@ -20,7 +20,6 @@ import {
 } from '../src/runner/timeout-policy.ts';
 import {
   extractModelInfoFromTranscriptFile,
-  formatModelLabel,
   resolveModelInfo,
 } from '../src/runner/model-info.ts';
 
@@ -142,7 +141,6 @@ describe('model-info', () => {
     );
     const info = extractModelInfoFromTranscriptFile(file);
     assert.deepEqual(info, { modelId: 'step-5-preview', providerId: 'new-provider-2' });
-    assert.equal(formatModelLabel(info), 'new-provider-2/step-5-preview');
   });
 
   it('falls back to scraping raw output', () => {

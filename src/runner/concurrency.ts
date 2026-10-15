@@ -7,8 +7,8 @@
  *
  * @module
  */
+import { resolve } from 'node:path';
 import { TaskStore } from './task-store.ts';
-import { join, resolve } from 'node:path';
 
 /** Env var: max concurrent RUNNING tasks (default {@link DEFAULT_MAX_CONCURRENT}). */
 export const MAX_CONCURRENT_ENV = 'AGENT_HUB_MAX_CONCURRENT';

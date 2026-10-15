@@ -6,10 +6,8 @@
 import { readTranscriptDocument } from './transcript-document.ts';
 import { modelInfoFromOutput } from '../adapters/transcript-format.ts';
 
-export interface ModelInfo {
-  readonly modelId?: string;
-  readonly providerId?: string;
-}
+import type { ModelInfo } from '../shared/transcript.ts';
+export type { ModelInfo } from '../shared/transcript.ts';
 
 export function extractModelInfoFromTranscriptFile(path: string, adapter?: string): ModelInfo | null {
   return readTranscriptDocument(path, adapter)?.modelInfo ?? null;
@@ -30,12 +28,4 @@ export function resolveModelInfo(options: {
     return extractModelInfoFromOutput(options.output);
   }
   return null;
-}
-
-/** Short card label, e.g. `new-provider-2/step-5-preview`. */
-export function formatModelLabel(info: ModelInfo | null | undefined): string | null {
-  if (!info) return null;
-  const { modelId, providerId } = info;
-  if (modelId && providerId) return `${providerId}/${modelId}`;
-  return modelId ?? providerId ?? null;
 }

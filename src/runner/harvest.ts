@@ -1,4 +1,4 @@
-import { readTranscriptDocument, parseTranscriptDocument, lastAssistantText, type TranscriptDocument } from './transcript-document.ts';
+import { lastAssistantText, type TranscriptDocument } from './transcript-document.ts';
 /**
  * Mechanical harvest for the board Report view (ADR-0002).
  *
@@ -98,11 +98,6 @@ export function truncateText(text: string, cap: number = LAST_TURN_CAP): Truncat
   };
 }
 
-/** Compatibility helper; production file reads carry the owning adapter. */
-export function extractLastAssistantMessage(input: unknown): string | null {
-  return lastAssistantText(parseTranscriptDocument(input));
-}
-
 function textFromFinalText(finalText: FinalText | undefined): string | null {
   if (finalText === undefined) return null;
   if (finalText.kind !== 'text') return null;
@@ -124,22 +119,6 @@ export function repairTaskTranscript(
     }
   }
   return located;
-}
-
-/**
- * Build the board harvest projection for one settled (or still-running) task.
- * Pure wrt the live CLI: only reads disk + the already-persisted RunRecord.
- */
-export function harvestTask(
-  taskId: string,
-  record: RunRecord | null,
-  options: { readonly home?: string; readonly cap?: number } = {},
-): HarvestView {
-  const cap = options.cap ?? resolveLastTurnCap();
-  const { record: working, transcriptPath } = repairTaskTranscript(taskId, record, options);
-
-  const document = transcriptPath ? readTranscriptDocument(transcriptPath, readTaskMeta(taskId)?.adapter) : null;
-  return projectHarvest(working, transcriptPath, document, cap);
 }
 
 /** Presentation from already parsed facts. No disk reads or writes. */

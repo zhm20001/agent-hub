@@ -3,13 +3,10 @@ import type { TranscriptDocument } from '../shared/transcript.ts';
  * WorkerAdapter interface for Agent Hub.
  * Allows pluggable subagent execution backends (ZCode CLI, Shell/Bash, Codex, etc.).
  *
- * Shape note: the full Agent Hub adapter contract (capabilities, permissions,
- * normalized events, `RunHandle`) is defined in
- * `docs/agent-hub/adapter-contract.md` and is *not* implemented here yet — this
- * seam still exposes argv assembly. Three contract members are implemented,
- * because a production dispatch path depended on them: `preconditions`
- * (ticket 11a) and `translate` / the settlement types (ticket 11c, see
- * `contract.ts`).
+ * This seam hides CLI command construction, launch checks, output translation,
+ * transcript location and transcript parsing. Process ownership and persistence
+ * stay with the Hub. Optional members describe capabilities currently absent
+ * from some adapters; the broader design contract is not fully implemented.
  */
 
 import type { AdapterRawOutput, AdapterTranslation, SessionRef, TranscriptRef } from './contract.ts';
@@ -72,7 +69,7 @@ export interface WorkerAdapter {
 
   /**
    * Environment entries this adapter contributes on top of the inherited
-   * environment. The engine merges them; the adapter does not replace the whole
+   * environment. The command builder merges them; the adapter does not replace the whole
    * environment, and reading them must not depend on the preconditions holding
    * (that would hide the unmet declaration behind a missing value).
    */
@@ -98,12 +95,12 @@ export interface WorkerAdapter {
    */
   translate?(raw: AdapterRawOutput): AdapterTranslation;
 
-  /**
-   * Locate an existing transcript without launching a CLI or writing state.
-   * Return null when unavailable. Never substitute another session for a known
-   * handle. Omitted means this adapter does not support on-disk discovery.
-   */
+  /** Parse this Agent's stored conversation into neutral messages and model info. */
   parseTranscript?(input: unknown): TranscriptDocument;
 
+  /** Locate an existing transcript without launching a CLI or writing state.
+   * Return null when unavailable. Never substitute another session for a known
+   * handle. Omitted means no on-disk discovery support.
+   */
   locateTranscript?(input: TranscriptLookup): LocatedTranscript | null;
 }

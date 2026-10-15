@@ -26,15 +26,6 @@ import { atomicWrite, withFileLock } from './file-storage.ts';
 import type { TaskMeta, TaskStatus } from './task-types.ts';
 export type { TaskMeta, TaskStatus } from './task-types.ts';
 
-/** Board list filter — archived tasks stay on disk but leave the default roster. */
-export function filterBoardTasks<T extends { archived?: boolean }>(
-  tasks: T[],
-  opts: { includeArchived?: boolean } = {},
-): T[] {
-  if (opts.includeArchived) return tasks;
-  return tasks.filter((t) => !t.archived);
-}
-
 export const SWARM_RUNS_DIR = defaultTaskStore.runsDir;
 export const getTaskDir = (id: string): string => defaultTaskStore.dir(id);
 export const ensureRunsDir = (): void => defaultTaskStore.ensure();

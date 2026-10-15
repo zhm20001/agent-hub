@@ -4,18 +4,18 @@
  *
  * Run with: node --import tsx --test tests/archive.spec.ts
  */
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import {
-  filterBoardTasks,
-  getTaskDir,
-  readTaskMeta,
-  updateTaskMeta,
-  type TaskMeta,
-} from '../src/runner/detached.ts';
+import type { TaskMeta } from '../src/runner/task-types.ts';
+const originalCwd = process.cwd();
+const scratch = mkdtempSync(join(tmpdir(), 'hub-archive-'));
+process.chdir(scratch);
+const { getTaskDir, readTaskMeta, updateTaskMeta } = await import('../src/runner/detached.ts');
+const { listTasks } = await import('../src/runner/task-queries.ts');
 
 const taskIds: string[] = [];
 
@@ -25,6 +25,8 @@ after(() => {
       rmSync(getTaskDir(taskId), { recursive: true, force: true });
     } catch {}
   }
+  process.chdir(originalCwd);
+  rmSync(scratch, { recursive: true, force: true });
 });
 
 function seedMeta(taskId: string, partial: Partial<TaskMeta> = {}): TaskMeta {
@@ -46,25 +48,15 @@ function seedMeta(taskId: string, partial: Partial<TaskMeta> = {}): TaskMeta {
   return meta;
 }
 
-describe('filterBoardTasks', () => {
-  it('excludes archived by default', () => {
-    const tasks = [
-      { taskId: 'a', archived: true },
-      { taskId: 'b' },
-      { taskId: 'c', archived: false },
-    ];
-    assert.deepEqual(
-      filterBoardTasks(tasks).map((t) => t.taskId),
-      ['b', 'c'],
-    );
+describe('listTasks archived filtering', () => {
+  it('excludes archived by default and keeps explicit false', () => {
+    seedMeta('archived', { archived: true });
+    seedMeta('visible');
+    seedMeta('explicit-visible', { archived: false });
+    assert.deepEqual(listTasks().map(task => task.taskId).sort(), ['explicit-visible', 'visible']);
   });
-
-  it('includeArchived keeps all', () => {
-    const tasks = [
-      { taskId: 'a', archived: true },
-      { taskId: 'b' },
-    ];
-    assert.equal(filterBoardTasks(tasks, { includeArchived: true }).length, 2);
+  it('includeArchived keeps every task', () => {
+    assert.equal(listTasks({ includeArchived: true }).length, 3);
   });
 });
 

@@ -3,7 +3,6 @@ import { existsSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   SWARM_RUNS_DIR,
-  readTaskMeta,
   updateTaskMeta,
   terminateTask,
   getTaskDir,

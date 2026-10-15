@@ -29,7 +29,8 @@ import {
   settleTask,
   spawnDetachedTask,
 } from '../src/runner/detached.ts';
-import { harvestTask } from '../src/runner/harvest.ts';
+import { repairTaskTranscript, projectHarvest } from '../src/runner/harvest.ts';
+import { readTranscriptDocument } from '../src/runner/transcript-document.ts';
 import { readRunRecord, writeRunRecord, type RunRecord } from '../src/runner/settlement.ts';
 import { ZCodeAdapter } from '../src/adapters/zcode.ts';
 import { adapterForSettlement } from '../src/adapters/registry.ts';
@@ -306,7 +307,7 @@ describe('transcriptPath persistence', () => {
     }
   });
 
-  it('harvestTask persists newly resolved transcriptPath into resolution.json', () => {
+  it('transcript repair persists newly resolved transcriptPath into resolution.json', () => {
     const home = scratch('home-h-');
     const handle = 'sess_harvest-persist-0002';
     const rollout = join(home, '.zcode', 'cli', 'rollout');
@@ -334,7 +335,8 @@ describe('transcriptPath persistence', () => {
     };
     writeRunRecord(taskDir, record);
 
-    const view = harvestTask(taskId, record, { home });
+    const located = repairTaskTranscript(taskId, record, { home });
+    const view = projectHarvest(located.record, located.transcriptPath, readTranscriptDocument(located.transcriptPath!, 'zcode'));
     assert.equal(view.transcriptPath, transcriptFile);
     assert.equal(view.lastTurn?.text, 'harvest-persist');
 

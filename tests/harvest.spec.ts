@@ -1,3 +1,4 @@
+import { parseTranscriptDocument, readTranscriptDocument, lastAssistantText } from '../src/runner/transcript-document.ts';
 /**
  * Unit tests for mechanical harvest (last-turn truncate + extract).
  * Fixtures only — no live CLI / no ZCode tokens.
@@ -16,8 +17,7 @@ import {
   DEFAULT_LAST_TURN_CAP,
   LAST_TURN_CAP_ENV,
   resolveLastTurnCap,
-  extractLastAssistantMessage,
-  harvestTask,
+  projectHarvest,
   repairTaskTranscript,
   truncateText,
 } from '../src/runner/harvest.ts';
@@ -80,9 +80,9 @@ describe('resolveLastTurnCap', () => {
   });
 });
 
-describe('extractLastAssistantMessage', () => {
+describe('last assistant text from normalized transcript', () => {
   it('takes the last assistant text parts from a messages array', () => {
-    const text = extractLastAssistantMessage([
+    const text = lastAssistantText(parseTranscriptDocument([
       { info: { role: 'user' }, parts: [{ type: 'text', text: 'prompt' }] },
       {
         info: { role: 'assistant' },
@@ -95,7 +95,7 @@ describe('extractLastAssistantMessage', () => {
         role: 'assistant',
         parts: [{ type: 'text', text: 'final reply' }],
       },
-    ]);
+    ], 'zcode'));
     assert.equal(text, 'final reply');
   });
 
@@ -105,7 +105,7 @@ describe('extractLastAssistantMessage', () => {
       JSON.stringify({ type: 'model_complete', payload: { content: 'almost', stopReason: 'stop' } }),
       JSON.stringify({ type: 'turn_complete', payload: { response: 'true last turn' } }),
     ].join('\n');
-    assert.equal(extractLastAssistantMessage(jsonl), 'true last turn');
+    assert.equal(lastAssistantText(parseTranscriptDocument(jsonl, 'zcode')), 'true last turn');
   });
 
   it('reads response.text from a model-io JSONL line', () => {
@@ -114,17 +114,17 @@ describe('extractLastAssistantMessage', () => {
       response: { text: '11c-loop-ok' },
       request: { body: {} },
     });
-    assert.equal(extractLastAssistantMessage(line), '11c-loop-ok');
+    assert.equal(lastAssistantText(parseTranscriptDocument(line, 'zcode')), '11c-loop-ok');
   });
 
   it('returns null for unrecognizable input', () => {
-    assert.equal(extractLastAssistantMessage(null), null);
-    assert.equal(extractLastAssistantMessage('not json'), null);
-    assert.equal(extractLastAssistantMessage({ foo: 1 }), null);
+    assert.equal(lastAssistantText(parseTranscriptDocument(null, 'zcode')), null);
+    assert.equal(lastAssistantText(parseTranscriptDocument('not json', 'zcode')), null);
+    assert.equal(lastAssistantText(parseTranscriptDocument({ foo: 1 }, 'zcode')), null);
   });
 });
 
-describe('adapter transcript lookup + harvestTask', () => {
+describe('adapter lookup and report projection', () => {
   it('resolves model-io-*.jsonl under ~/.zcode/cli/rollout', () => {
     const home = scratch();
     const handle = 'sess_harvest-test-0001';
@@ -159,7 +159,9 @@ describe('adapter transcript lookup + harvestTask', () => {
       observation: { producedOutput: true, unmetPreconditions: [] },
     };
 
-    const view = harvestTask('task-harvest-1', record, { home, cap: 2000 });
+    const located = repairTaskTranscript('task-harvest-1', record, { home });
+    const document = readTranscriptDocument(located.transcriptPath!, 'zcode');
+    const view = projectHarvest(located.record, located.transcriptPath, document, 2000);
     assert.equal(view.lastTurn?.text, 'disk-last-turn');
     assert.equal(view.lastTurn?.fullText, 'disk-last-turn');
     assert.equal(view.lastTurn?.source, 'transcript');
@@ -178,7 +180,8 @@ describe('adapter transcript lookup + harvestTask', () => {
       observation: { producedOutput: true, unmetPreconditions: [] },
     };
 
-    const view = harvestTask('task-harvest-2', record, { home });
+    const located = repairTaskTranscript('task-harvest-2', record, { home });
+    const view = projectHarvest(located.record, located.transcriptPath, null);
     assert.equal(view.transcriptPath, null);
     assert.equal(view.lastTurn?.text, 'only-final');
     assert.equal(view.lastTurn?.fullText, 'only-final');
@@ -196,7 +199,7 @@ describe('adapter transcript lookup + harvestTask', () => {
       observation: { producedOutput: true, unmetPreconditions: [] },
     };
 
-    const view = harvestTask('task-harvest-3', record, { home, cap: 20 });
+    const view = projectHarvest(record, null, null, 20);
     assert.equal(view.lastTurn?.truncated, true);
     assert.equal(view.lastTurn?.fullLength, 100);
     assert.equal(view.lastTurn?.cap, 20);
@@ -294,7 +297,7 @@ describe('transcript ownership', () => {
       const repaired = repairTaskTranscript(taskId, record, { home });
       assert.equal(repaired.transcriptPath, null);
       assert.deepEqual(repaired.record, record);
-      const view = harvestTask(taskId, record, { home });
+      const view = projectHarvest(repaired.record, repaired.transcriptPath, null);
       assert.equal(view.transcriptPath, null);
       assert.equal(view.lastTurn?.text, 'own answer');
     });
@@ -325,7 +328,7 @@ describe('transcript ownership', () => {
     const foreignRecord = {
       ...record, resolution: { ...record.resolution, transcriptRef: { provenance: 'zcode', handle } },
     };
-    assert.equal(harvestTask(taskId, foreignRecord, { home }).transcriptPath, null);
+    assert.equal(repairTaskTranscript(taskId, foreignRecord, { home }).transcriptPath, null);
   });
 
   it('a Codex ref without metadata never falls back to a matching ZCode session', () => {
@@ -333,6 +336,6 @@ describe('transcript ownership', () => {
     const foreignRecord = {
       ...record, resolution: { ...record.resolution, transcriptRef: { provenance: 'codex', handle } },
     };
-    assert.equal(harvestTask('missing-task-metadata', foreignRecord, { home }).transcriptPath, null);
+    assert.equal(repairTaskTranscript('missing-task-metadata', foreignRecord, { home }).transcriptPath, null);
   });
 });

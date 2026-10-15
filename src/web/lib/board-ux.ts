@@ -72,6 +72,5 @@ export function filterLogNoise(raw: string): FilteredLog {
   return { text, hidden };
 }
 
-// Compatibility exports; Agent-specific parsing is owned by adapters.
+// Shared display shapes; Agent-specific parsing is owned by adapters.
 export type { ConversationRole, ConversationTurn, SummarizeOptions } from '../../shared/transcript.ts';
-export { summarizeTranscript } from '../../shared/transcript-compat.ts';
