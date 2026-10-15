@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Terminal, FileCheck, GitBranch, Code2, Ban, RefreshCw, Folder, MessagesSquare, Archive } from 'lucide-react';
+import { useTaskData } from '../hooks/use-task-data.ts';
 import type { Task, TaskDetailData } from '../types.ts';
 import { translations, type Language } from '../i18n.ts';
 import { TerminalView } from './TerminalView.tsx';
@@ -23,26 +24,13 @@ const TABS: TabType[] = ['report', 'conversation', 'json', 'terminal', 'vcs'];
 export const TaskDetail: React.FC<TaskDetailProps> = ({ task, onRefresh, onArchive, lang }) => {
   const t = translations[lang];
   const [activeTab, setActiveTab] = useState<TabType>('report');
-  const [detailData, setDetailData] = useState<TaskDetailData | null>(null);
+  const { data: detailData, refresh: fetchDetail } = useTaskData<TaskDetailData>(
+    `${task.taskId}:${task.status}`, `/api/tasks/${encodeURIComponent(task.taskId)}`,
+    data => !data || data.status === 'RUNNING' ? 3000 : null,
+  );
   const [isKilling, setIsKilling] = useState<boolean>(false);
 
-  const fetchDetail = async () => {
-    try {
-      const res = await fetch(`/api/tasks/${task.taskId}`);
-      if (res.ok) {
-        const data = await res.json();
-        setDetailData(data);
-      }
-    } catch {}
-  };
-
-  useEffect(() => {
-    setActiveTab('report');
-    setDetailData(null);
-    fetchDetail();
-    const interval = setInterval(fetchDetail, 3000);
-    return () => clearInterval(interval);
-  }, [task.taskId]);
+  useEffect(() => { setActiveTab('report'); }, [task.taskId]);
 
   const handleKill = async () => {
     const confirmMsg = t.confirmKill.replace('{taskId}', task.taskId).replace('{pid}', String(task.pid || ''));

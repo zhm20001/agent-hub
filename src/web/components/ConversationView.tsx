@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { MessagesSquare, Copy, Check } from 'lucide-react';
+import { useTaskData } from '../hooks/use-task-data.ts';
 import type { Task } from '../types.ts';
 import { translations, type Language } from '../i18n.ts';
 import type { ConversationTurn } from '../lib/board-ux.ts';
@@ -37,50 +38,17 @@ function displaySource(turn: ConversationTurn): { source: string; truncated: boo
 
 export const ConversationView: React.FC<ConversationViewProps> = ({ task, lang }) => {
   const t = translations[lang];
-  const [turns, setTurns] = useState<ConversationTurn[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [resolvedPath, setResolvedPath] = useState<string | null>(task.transcriptPath ?? null);
-  const [emptyReason, setEmptyReason] = useState<string | null>(null);
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  const { data, error, loading } = useTaskData<ConversationResponse>(
+    `${task.taskId}:${task.status}`, `/api/tasks/${encodeURIComponent(task.taskId)}/conversation`,
+    value => task.status === 'RUNNING' || !value ? 3000 : null,
+  );
+  const turns = data?.turns ?? null;
+  const resolvedPath = data?.transcriptPath ?? null;
+  const emptyReason = data?.emptyReason ?? null;
+  const sessionId = data?.sessionId ?? null;
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
-
   const transcriptRef = task.closingRecord?.resolution?.transcriptRef;
   const isTimeout = task.status === 'TIMEOUT_KILLED';
-
-  useEffect(() => {
-    let cancelled = false;
-    setTurns(null);
-    setError(null);
-    setEmptyReason(null);
-    setLoading(true);
-
-    (async () => {
-      try {
-        const res = await fetch(`/api/tasks/${task.taskId}/conversation`);
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(typeof body.error === 'string' ? body.error : `HTTP ${res.status}`);
-        }
-        const data = (await res.json()) as ConversationResponse;
-        if (cancelled) return;
-        setTurns(Array.isArray(data.turns) ? data.turns : []);
-        setResolvedPath(data.transcriptPath ?? null);
-        setEmptyReason(data.emptyReason ?? null);
-        setSessionId(data.sessionId ?? null);
-      } catch (err: unknown) {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : String(err));
-        setTurns([]);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [task.taskId]);
 
   const roleLabel = (role: ConversationTurn['role']) => {
     if (role === 'user') return t.conversationRoleUser;

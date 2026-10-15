@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useTaskData } from './hooks/use-task-data.ts';
 import type { Task } from './types.ts';
 import { translations, type Language } from './i18n.ts';
 import { Header } from './components/Header.tsx';
@@ -42,35 +43,15 @@ export const App: React.FC = () => {
   };
 
   const t = translations[lang];
-  const [tasks, setTasks] = useState<Task[]>([]);
+  const { data: taskData, loading, refresh: fetchTasks } = useTaskData<Task[]>(
+    'tasks', '/api/tasks', data => data?.some(task => task.status === 'RUNNING') ? 1500 : 3500,
+  );
+  const tasks = taskData ?? [];
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [isDispatchOpen, setIsDispatchOpen] = useState<boolean>(false);
-  const [loading, setLoading] = useState<boolean>(true);
-
-  const fetchTasks = async () => {
-    try {
-      const res = await fetch('/api/tasks');
-      if (res.ok) {
-        const data: Task[] = await res.json();
-        setTasks(data);
-        if (data.length > 0 && !selectedTaskId) {
-          setSelectedTaskId(data[0].taskId);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to load tasks:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   useEffect(() => {
-    fetchTasks();
-    const hasRunningTasks = tasks.some((task) => task.status === 'RUNNING');
-    const intervalTime = hasRunningTasks ? 1500 : 3500;
-    const interval = setInterval(fetchTasks, intervalTime);
-    return () => clearInterval(interval);
-  }, [tasks]);
+    if (taskData?.length) setSelectedTaskId(current => current ?? taskData[0].taskId);
+  }, [taskData]);
 
   const handleTaskDispatched = (newTaskId: string) => {
     fetchTasks();
