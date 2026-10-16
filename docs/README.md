@@ -14,7 +14,7 @@ Live path = swarm board（`npm run start`，[DEMO.md](../DEMO.md)，[DISPATCH.md
 | :--- | :--- | :--- |
 | **[用户使用指南 (USER_GUIDE.md)](./USER_GUIDE.md)** | 人类开发者 / 运维操作人员 | Web 监控台操作、任务派发、实时日志终端流、Git Diff 对比、双语切换 |
 | **[Agent 工具接入指南 (AGENT_GUIDE.md)](./AGENT_GUIDE.md)** | AI Master Agent / LLM 调度系统 | `swarm_dispatch` 等 Tool 规范、异步调度循环、状态判断与错误自愈 |
-| **[系统架构与内核原理 (ARCHITECTURE.md)](./ARCHITECTURE.md)** | 架构师 / 核心开发人员 | 脱钩进程 `spawn({ detached: true })`、`.swarm-runs/` 文件规范、TTL 看门狗、SSE 协议 |
+| **[系统架构与内核原理 (ARCHITECTURE.md)](./ARCHITECTURE.md)** | 架构师 / 核心开发人员 | 模块与 seam 全景、派发/查询/恢复 Mermaid 时序、文件交接与代码索引 |
 
 ---
 
