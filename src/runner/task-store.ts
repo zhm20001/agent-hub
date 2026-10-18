@@ -15,13 +15,18 @@ export class TaskStore {
     if (this.connection) return this.connection;
     this.ensure();
     const db = new DatabaseSync(join(this.runsDir, 'hub.sqlite'));
-    db.exec(`PRAGMA busy_timeout=10000; PRAGMA journal_mode=WAL;
+    try {
+      db.exec(`PRAGMA busy_timeout=10000; PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, meta TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS task_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL);
       CREATE UNIQUE INDEX IF NOT EXISTS completion_once ON task_events(task_id) WHERE type='completion';
       CREATE TABLE IF NOT EXISTS dispatch_requests (request_key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, task_id TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS consumer_cursors (id TEXT PRIMARY KEY, seq INTEGER NOT NULL);
     `);
+    } catch (error) {
+      try { db.close(); } catch {}
+      throw error;
+    }
     this.connection = db;
     return db;
   }
@@ -83,13 +88,19 @@ export class TaskStore {
     return JSON.parse(String(this.database.prepare('SELECT meta FROM tasks WHERE id=?').get(id)!.meta));
   }
   list(): TaskMeta[] {
+    let entries: import('node:fs').Dirent[];
     try {
-      for (const entry of readdirSync(this.runsDir, { withFileTypes: true })) {
-        if (entry.isDirectory()) { try { this.read(entry.name); } catch {} }
-      }
-      return this.database.prepare('SELECT meta FROM tasks').all().map(row => JSON.parse(String(row.meta)));
+      entries = readdirSync(this.runsDir, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
     }
-    catch { return []; }
+    // Only directory-name validation and unreadable legacy JSON are skippable.
+    // Failure to read authoritative SQLite state must stop dispatch admission.
+    for (const entry of entries) {
+      if (entry.isDirectory() && /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(entry.name)) this.read(entry.name);
+    }
+    return this.database.prepare('SELECT meta FROM tasks').all().map(row => JSON.parse(String(row.meta)));
   }
   create(meta: TaskMeta): TaskMeta { this.reserve(meta.taskId); this.writeInitial(meta); return meta; }
   /** Only used after an exclusive directory reservation; never overwrites a task. */

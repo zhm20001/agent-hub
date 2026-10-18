@@ -178,3 +178,22 @@ test('a new request key cannot claim an existing task ID on either initial call 
     assert.equal(store.request('new-key'), null);
   } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
+
+test('a corrupt authoritative database refuses listing and admission instead of inventing an empty queue', async () => {
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  const root = mkdtempSync(join(tmpdir(), 'agent-hub-corrupt-db-'));
+  const store = new TaskStore(join(root, 'runs'));
+  let commandsBuilt = 0;
+  const engine = createTaskEngine({ store, env: { ...process.env, AGENT_HUB_TASK_ROOTS: root }, getAdapter: () => ({ name: 'fixture', description: 'must not start', buildCommand() { commandsBuilt++; return { cmd: 'true', args: [] }; } }) });
+  try {
+    mkdirSync(store.runsDir);
+    writeFileSync(join(store.runsDir, 'hub.sqlite'), 'this is a damaged database, not a SQLite file');
+    assert.throws(() => store.list(), /database|file is not/i);
+    assert.throws(() => engine.spawnDetachedTask({ taskId: 'blocked', adapter: 'fixture', prompt: 'must not launch', cwd: root }), /database|file is not/i);
+    assert.equal(commandsBuilt, 0);
+    assert.equal(existsSync(store.dir('blocked')), false);
+    // A failed lazy initialization must not leave an unusable cached connection.
+    rmSync(join(store.runsDir, 'hub.sqlite'));
+    assert.deepEqual(store.list(), []);
+  } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
