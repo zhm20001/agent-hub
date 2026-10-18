@@ -12,6 +12,8 @@ interface DispatchModalProps {
   onClose: () => void;
   onDispatched: (newTaskId: string) => void;
   lang: Language;
+  projectId?: string;
+  cwd?: string;
 }
 
 type Preset = { title: string; prompt: string; ticket: string };
@@ -49,12 +51,16 @@ export const DispatchModal: React.FC<DispatchModalProps> = ({
   onClose,
   onDispatched,
   lang,
+  projectId,
+  cwd,
 }) => {
   const t = translations[lang];
   const titleId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
   const submittingRef = useRef(false);
+  const requestRef = useRef<{body:string;key:string} | null>(null);
+  const [handoff, setHandoff] = useState(false);
 
   const [prompt, setPrompt] = useState('');
   const [ticket, setTicket] = useState('');
@@ -92,6 +98,7 @@ export const DispatchModal: React.FC<DispatchModalProps> = ({
 
     restoreFocusRef.current = document.activeElement as HTMLElement | null;
     submittingRef.current = false;
+    requestRef.current = null;
     setIsSubmitting(false);
     setError(null);
 
@@ -164,17 +171,15 @@ export const DispatchModal: React.FC<DispatchModalProps> = ({
     setError(null);
 
     try {
+      const payload = { prompt, projectId, cwd, ticket: ticket.trim() || undefined,
+        label: label.trim() || undefined, adapter, mode, timeout: Number(timeout),
+        ...(adapter !== 'bash' && handoff ? { handoff: true } : {}),
+      };
+      const body = JSON.stringify(payload);
+      if (requestRef.current?.body !== body) requestRef.current = {body, key: crypto.randomUUID()};
       const res = await fetch('/api/tasks/dispatch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: prompt.trim(),
-          ticket: ticket.trim() || undefined,
-          label: label.trim() || undefined,
-          adapter,
-          mode,
-          timeout: parseInt(timeout, 10) || 7200,
-        }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...payload, request_key: requestRef.current.key }),
       });
 
       if (!res.ok) {
@@ -353,6 +358,8 @@ export const DispatchModal: React.FC<DispatchModalProps> = ({
               </label>
               <input
                 type="number"
+                min="1"
+                required
                 value={timeout}
                 onChange={(e) => {
                   setTimeoutVal(e.target.value);
@@ -379,6 +386,11 @@ export const DispatchModal: React.FC<DispatchModalProps> = ({
             />
             <p className="text-[10px] text-ink-faint mt-1">{t.submitShortcutHint}</p>
           </div>
+
+          {adapter !== 'bash' && <label className="flex items-center gap-2 text-xs text-ink-secondary">
+            <input type="checkbox" checked={handoff} onChange={event => setHandoff(event.target.checked)} />
+            {lang === 'zh' ? '要求 Agent 留下结构化交接说明（由 Agent 自述）' : 'Request a structured handoff (agent self-report)'}
+          </label>}
 
           <div className="pt-1 flex items-center justify-end gap-2">
             <button

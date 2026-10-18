@@ -63,6 +63,18 @@ export const ReportView: React.FC<ReportViewProps> = ({ task, lang }) => {
       </div>
 
       <div className="flex-1 overflow-y-auto p-6 space-y-4 max-w-4xl">
+        {task.handoff && <section className="rounded-lg border border-line bg-surface p-4 space-y-2">
+          <h3 className="font-semibold">{lang === 'zh' ? 'Agent 交接说明' : 'Agent handoff'} · {task.handoff.selfReport?.status ?? task.handoff.state}</h3>
+          <p className="text-ink-muted">{lang === 'zh' ? '以下内容由 Agent 自述，需结合原文与验证证据判断。' : 'Agent self-report; assess it alongside the transcript and verification evidence.'}</p>
+          {task.handoff.selfReport ? <>
+            <p className="whitespace-pre-wrap">{task.handoff.selfReport.summary}</p>
+            {(['verification','nextSteps','artifacts'] as const).map(field => task.handoff?.selfReport?.[field]?.length ? <div key={field}>
+              <p className="font-semibold">{lang === 'zh' ? ({verification:'验证陈述',nextSteps:'后续建议',artifacts:'产物'}[field]) : field}</p>
+              <ul className="list-disc pl-5">{task.handoff!.selfReport![field]!.map((item,index) => <li key={index} className="whitespace-pre-wrap break-words">{item}</li>)}</ul>
+            </div> : null)}
+          </> : <p>{task.handoff.reason}</p>}
+          <p className="text-ink-muted break-all">{task.handoff.taskId} · {task.handoff.generatedAt} · resolution.json</p>
+        </section>}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div className="p-3 rounded-lg bg-surface border border-line">
             <span className="text-[11px] text-ink-muted block mb-0.5">{t.statStatus}</span>

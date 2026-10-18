@@ -19,6 +19,7 @@ export interface ClosingRecord {
 
 export interface Task {
   taskId: string;
+  projectId?: string;
   ticket?: string;
   label: string;
   prompt: string;
@@ -51,6 +52,7 @@ export interface LastTurn {
 }
 
 export interface TaskDetailData extends Task {
+  handoff?: {state: string; taskId: string; generatedAt: string; reason?: string; selfReport?: {status: string; summary: string; verification?: string[]; nextSteps?: string[]; artifacts?: string[]}} | null;
   report?: string;
   rawLogTail?: string;
   lastTurn?: LastTurn | null;
@@ -70,4 +72,32 @@ export interface VcsData {
   diff?: string;
   cwd: string;
   error?: string;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  goal: string;
+  cwd?: string;
+  createdAt: number;
+  updatedAt: number;
+  latestNote?: ProjectNote | null;
+  taskCount?: number;
+  runningCount?: number;
+}
+export interface ProjectNote {
+  id: string;
+  projectId: string;
+  body: string;
+  author: string;
+  sourceTaskIds: string[];
+  createdAt: number;
+  sequence: number;
+}
+export interface ProjectContext {
+  project: Project;
+  latestNote: ProjectNote | null;
+  notes: ProjectNote[];
+  tasks: Task[];
+  changesSinceVisit: { after: number; through: number; notes: ProjectNote[]; tasks: Task[] };
 }
