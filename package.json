@@ -1,6 +1,6 @@
 {
   "name": "agent-hub",
-  "description": "Agent Hub \u2014 dispatch coding agents across adapters, observe and intervene via the board",
+  "description": "Agent Hub — dispatch coding agents across adapters, observe and intervene via the board",
   "version": "0.2.0-rc.1",
   "publishConfig": {
     "access": "public"
@@ -11,28 +11,32 @@
   },
   "type": "module",
   "main": "lib/index.js",
-  "types": "lib/types/index.d.ts",
+  "types": "lib/index.d.ts",
   "exports": {
     ".": {
-      "types": "./lib/types/index.d.ts",
+      "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },
   "files": [
-    "lib/index.js",
-    "lib/types/**/*.d.ts"
+    "lib",
+    "dist",
+    "src",
+    "README.md"
   ],
   "license": "MIT",
   "scripts": {
     "dev": "tsx src/cli.ts",
-    "build": "vite build",
+    "build": "node scripts/build.mjs",
     "start": "tsx src/cli.ts",
-    "test": "node --import tsx --test --test-concurrency=1 tests/faced-dispatch.spec.ts tests/faced-codex.spec.ts tests/faced-close-the-loop.spec.ts tests/harvest.spec.ts tests/task-roots.spec.ts tests/concurrency-and-transcript.spec.ts tests/dispatch-tickets.spec.ts tests/board-ux.spec.ts tests/timeout-policy.spec.ts tests/reconcile.spec.ts tests/archive.spec.ts tests/lifecycle.spec.ts tests/server-lifecycle.spec.ts tests/task-data.spec.ts tests/task-store.spec.ts tests/completion-publication.spec.ts tests/transcript-document.spec.ts tests/task-queries.spec.ts tests/launch-recovery.spec.ts",
+    "test": "node scripts/test.mjs",
     "transcript": "node --import tsx src/runner/read-transcript.ts",
     "restart": "bash scripts/restart-board.sh",
-    "dispatch-tickets": "node scripts/dispatch-tickets.mjs"
+    "dispatch-tickets": "node scripts/dispatch-tickets.mjs",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions",
+    "prepack": "npm run build"
   },
   "dependencies": {
     "@fontsource-variable/public-sans": "^5.3.0",
@@ -58,6 +62,13 @@
     "@vitejs/plugin-react": "^4.3.4",
     "tailwindcss": "^4.0.12",
     "tsx": "^4.19.3",
+    "typescript": "^5.9.3",
     "vite": "^6.2.1"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "bin": {
+    "agent-hub": "lib/cli.js"
   }
 }

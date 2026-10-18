@@ -64,7 +64,7 @@ export class ZCodeAdapter implements WorkerAdapter {
 
   constructor(cliPath?: string) {
     const resolved = resolveZcodeCliPath(cliPath);
-    if (resolved.ok) {
+    if (resolved.ok === true) {
       this.cliPath = resolved.path;
       this.cliPathError = null;
     } else {

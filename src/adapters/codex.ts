@@ -113,7 +113,7 @@ export class CodexAdapter implements WorkerAdapter {
 
   constructor(cliPath?: string) {
     const resolved = resolveCodexCliPath(cliPath);
-    if (resolved.ok) {
+    if (resolved.ok === true) {
       this.cliPath = resolved.path;
       this.cliPathError = null;
     } else {
