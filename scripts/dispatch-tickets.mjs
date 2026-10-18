@@ -163,6 +163,72 @@ export function applyDefaults(ticket, defaults) {
  *   source: string,
  * }} Ticket */
 
+/** Validate caller-supplied fields before defaults or coercion can hide a malformed ticket. */
+export function validateTicketFields(value, source, promptRequired = true) {
+  const fail = field => { throw new Error(`${source}: invalid ${field}`); };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail('ticket object');
+  if (promptRequired && (typeof value.prompt !== 'string' || !value.prompt.trim())) fail('prompt');
+  for (const field of ['prompt','ticket','label','adapter','mode','cwd','projectId','type','status','request_key','resumeSessionId']) {
+    if (value[field] !== undefined && (typeof value[field] !== 'string' || !value[field].trim())) fail(field);
+  }
+  if (value.adapter !== undefined && !['zcode','codex','bash','shell'].includes(value.adapter)) fail('adapter');
+  if (value.handoff === true && ['bash','shell'].includes(value.adapter)) fail('handoff: Bash accepts literal commands');
+  if (value.projectId !== undefined && !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(value.projectId)) fail('projectId');
+  for (const field of ['handoff','parallel']) {
+    if (value[field] !== undefined && typeof value[field] !== 'boolean') fail(field);
+  }
+  if (value.timeout !== undefined && (typeof value.timeout !== 'number' || !Number.isFinite(value.timeout) || value.timeout <= 0)) fail('timeout');
+  if (value.labels !== undefined && (!Array.isArray(value.labels) || value.labels.some(label => typeof label !== 'string'))) fail('labels');
+  try { normalizeBlockers(value.blockedBy); } catch (error) { throw new Error(`${source}: ${error.message}`); }
+}
+
+function ticketIdentity(ticket) { return ticket.ticket ?? ticket.source; }
+function graphKey(projectId, identity) { return JSON.stringify([projectId ?? null, identity]); }
+
+/** A preflight check only: does not schedule work or infer semantic success. */
+export function validateTicketGraph(tickets, roster) {
+  const nodes = new Map();
+  const remote = new Set(roster.filter(task => typeof task.ticket === 'string').map(task => graphKey(task.projectId, task.ticket)));
+  for (const ticket of tickets) {
+    validateTicketFields(ticket, ticket.source);
+    const identity = ticketIdentity(ticket);
+    if (typeof identity !== 'string' || !identity.trim()) throw new Error('Ticket identity required');
+    const key = graphKey(ticket.projectId, identity);
+    if (nodes.has(key)) throw new Error(`Duplicate ticket identity ${identity} in project ${ticket.projectId ?? '(none)'}: ${nodes.get(key).source}, ${ticket.source}`);
+    nodes.set(key, ticket);
+  }
+  const edges = new Map();
+  for (const [key, ticket] of nodes) {
+    const dependencies = normalizeBlockers(ticket.blockedBy).map(blocker => typeof blocker === 'string' ? blocker : blocker.ticket);
+    const paths = [];
+    for (const dependency of dependencies) {
+      const target = graphKey(ticket.projectId, dependency);
+      if (target === key) throw new Error(`Self dependency: ${ticketIdentity(ticket)} -> ${dependency} (${ticket.source})`);
+      if (!nodes.has(target) && !remote.has(target)) throw new Error(`Unknown dependency ${dependency} for ${ticketIdentity(ticket)} in project ${ticket.projectId ?? '(none)'}`);
+      if (nodes.has(target)) paths.push(target);
+    }
+    edges.set(key, paths);
+  }
+  // Iterative DFS keeps large directories from overflowing the JavaScript call stack.
+  const visited = new Set();
+  for (const root of nodes.keys()) {
+    if (visited.has(root)) continue;
+    const path = [root], active = new Map([[root,0]]), stack = [{ key:root, next:0 }];
+    while (stack.length) {
+      const frame = stack[stack.length - 1];
+      const next = edges.get(frame.key)[frame.next++];
+      if (next === undefined) {
+        visited.add(frame.key); active.delete(frame.key); stack.pop(); path.pop();
+      } else if (active.has(next)) {
+        const cycle = [...path.slice(active.get(next)), next].map(key => ticketIdentity(nodes.get(key)));
+        throw new Error(`Dependency cycle in project ${nodes.get(root).projectId ?? '(none)'}: ${cycle.join(' -> ')}`);
+      } else if (!visited.has(next)) {
+        active.set(next,path.length); path.push(next); stack.push({key:next,next:0});
+      }
+    }
+  }
+}
+
 /**
  * @param {string} filePath
  * @returns {Ticket | null}
@@ -174,10 +240,7 @@ export function loadTicket(filePath) {
 
   if (ext === '.json') {
     const obj = JSON.parse(raw);
-    if (typeof obj.prompt !== 'string' || obj.prompt.trim() === '') {
-      console.warn(`[skip] ${source}: prompt required`);
-      return null;
-    }
+    validateTicketFields(obj, source);
     return {
       ticket: typeof obj.ticket === 'string' ? obj.ticket : undefined,
       label: typeof obj.label === 'string' ? obj.label : undefined,
@@ -211,6 +274,7 @@ export function loadTicket(filePath) {
         source,
       };
     }
+    validateTicketFields(parsed.meta, source, false);
     const prompt = typeof parsed.meta.prompt === 'string' && parsed.meta.prompt.trim() !== ''
       ? String(parsed.meta.prompt)
       : parsed.body.trim();
@@ -258,7 +322,7 @@ export function normalizeBlockers(value) {
 }
 
 export function isEligible(ticket, completed, dispatched, records = new Map()) {
-  if (ticket.ticket && dispatched.has(ticket.ticket)) return { ok:false, reason:'already-dispatched' };
+  if (dispatched.has(ticketIdentity(ticket))) return { ok:false, reason:'already-dispatched' };
   const blockers=normalizeBlockers(ticket.blockedBy);
   const unmet=blockers.filter(blocker => {
     const id=typeof blocker === 'string' ? blocker : blocker.ticket;
@@ -297,14 +361,14 @@ async function getBoardJson(baseUrl, path) {
 
 /** Same ticket identity always maps to the same request; changed content must conflict, not silently rerun. */
 export function ticketRequestKey(ticketsDir, ticket) {
-  return 'ticket-'+createHash('sha256').update(JSON.stringify([resolve(ticketsDir),ticket.ticket ?? ticket.source])).digest('hex');
+  return 'ticket-'+createHash('sha256').update(JSON.stringify([resolve(ticketsDir),ticket.projectId ?? null,ticketIdentity(ticket)])).digest('hex');
 }
 
 /** @param {Ticket} ticket */
 export function toPayload(ticket) {
   /** @type {Record<string, unknown>} */
   const body = { prompt: ticket.prompt };
-  if (ticket.ticket) body.ticket = ticket.ticket;
+  body.ticket = ticketIdentity(ticket);
   if (ticket.projectId) body.projectId = ticket.projectId;
   if (ticket.handoff === true) body.handoff = true;
   if (ticket.label) body.label = ticket.label;
@@ -403,13 +467,16 @@ export async function runDispatch(opts) {
 
   /** @type {Ticket[]} */
   const tickets = [];
-  for (const f of files) {
-    const t = loadTicket(f);
-    if (t) {
-      applyDefaults(t, defaults);
-      tickets.push(t);
+  try {
+    for (const f of files) {
+      const t = loadTicket(f);
+      if (t) {
+        applyDefaults(t, defaults);
+        validateTicketFields(t, t.source);
+        tickets.push(t);
+      }
     }
-  }
+  } catch (error) { console.error(`[fail] ticket validation: ${error.message}`); return 1; }
 
   if (tickets.length === 0) {
     console.error(`No ticket files found in ${ticketsDir}`);
@@ -446,6 +513,8 @@ export async function runDispatch(opts) {
     let state;
     try { state=await readBoardTicketState(baseUrl); }
     catch (err) { console.error(`[fail] roster: ${err.message}`); return 1; }
+    try { validateTicketGraph(tickets, state.roster); }
+    catch (error) { console.error(`[fail] ticket graph: ${error.message}`); return 1; }
     const projectStates=new Map();
     function stateFor(ticket) {
       const project=ticket.projectId ?? null;
@@ -473,7 +542,7 @@ export async function runDispatch(opts) {
     const eligible = [];
     for (const ticket of tickets) {
       const {completed,dispatched:localDispatched,records}=stateFor(ticket);
-      const id = ticket.ticket;
+      const id = ticketIdentity(ticket);
       const ready = isReadyTask(ticket);
       if (!ready.ok) {
         skipped += 1;
@@ -523,7 +592,7 @@ export async function runDispatch(opts) {
       if (dryRun) {
         console.log(`[dry-run] would POST ${ticket.source}:`, JSON.stringify(payload));
         posted += 1;
-        if (ticket.ticket) localDispatched.add(ticket.ticket);
+        localDispatched.add(ticketIdentity(ticket));
         if (ticket.parallel === false) break;
         continue;
       }
@@ -532,7 +601,7 @@ export async function runDispatch(opts) {
         if (status === 201 || status === 200) {
           console.log(`[ok] ${ticket.source} → taskId=${json.taskId} status=${json.status}`);
           posted += 1;
-          if (ticket.ticket) localDispatched.add(ticket.ticket);
+          localDispatched.add(ticketIdentity(ticket));
         } else {
           console.error(`[fail] ${ticket.source} HTTP ${status}:`, json);
           if (status === 409) console.error('Same ticket request_key has different content. Review the original task; use a new explicit ticket identity for a new attempt.');

@@ -223,6 +223,64 @@ for (const adapter of ['bash','shell']) it(`${adapter} dependencies gate dispatc
 it('same ticket in another project cannot satisfy dependency or suppress this project dispatch',async()=>{
  const dir=scratch();writeFileSync(join(dir,'a.json'),JSON.stringify({ticket:'a',type:'task',status:'ready-for-agent',prompt:'x',projectId:'p',adapter:'codex'}));
  writeFileSync(join(dir,'b.json'),JSON.stringify({ticket:'b',type:'task',status:'ready-for-agent',prompt:'x',projectId:'p',blockedBy:['foreign']}));const seen:any[]=[];
- await board((req,res)=>{res.setHeader('content-type','application/json');if(req.method==='GET'){res.end(JSON.stringify([{taskId:'old',ticket:'a',projectId:'q',status:'COMPLETED'},{taskId:'wrong',ticket:'foreign',projectId:'q',status:'COMPLETED'}]));return;}let raw='';req.on('data',(c:any)=>raw+=c);req.on('end',()=>{seen.push(JSON.parse(raw));res.statusCode=201;res.end('{"taskId":"new","status":"RUNNING"}');});},async url=>assert.equal(await runDispatch({ticketsDir:dir,baseUrl:url}),0));
+ await board((req,res)=>{res.setHeader('content-type','application/json');if(req.method==='GET'){res.end(JSON.stringify([{taskId:'old',ticket:'a',projectId:'q',status:'COMPLETED'},{taskId:'wrong',ticket:'foreign',projectId:'q',status:'COMPLETED'}]));return;}let raw='';req.on('data',(c:any)=>raw+=c);req.on('end',()=>{seen.push(JSON.parse(raw));res.statusCode=201;res.end('{"taskId":"new","status":"RUNNING"}');});},async url=>{ assert.equal(await runDispatch({ticketsDir:dir,baseUrl:url}),1); assert.deepEqual(seen,[]); rmSync(join(dir,'b.json')); assert.equal(await runDispatch({ticketsDir:dir,baseUrl:url}),0); });
  assert.deepEqual(seen.map(p=>p.ticket),['a']);
+});
+
+it('validates every ticket before dispatching an earlier ready ticket', async () => {
+  const invalidFields = [
+    { prompt: 1 }, { cwd: false }, { adapter: 42 }, { adapter: 'unknown' },
+    { handoff: 'true' }, { projectId: {} }, { request_key: 42 },
+    { timeout: -1 }, { parallel: 'false' }, { blockedBy: [42] },
+    { adapter: 'bash', handoff: true },
+  ];
+  for (const invalid of invalidFields) {
+    const dir = scratch();
+    writeFileSync(join(dir, '01.json'), JSON.stringify({ ticket: 'first', type: 'task', status: 'ready-for-agent', prompt: 'first' }));
+    writeFileSync(join(dir, '99.json'), JSON.stringify({ ticket: 'later', type: 'task', status: 'pending', prompt: 'later', ...invalid }));
+    let posts = 0;
+    await board((req, res) => {
+      if (req.method === 'POST') posts++;
+      res.setHeader('content-type', 'application/json');
+      res.statusCode = req.method === 'POST' ? 201 : 200;
+      res.end(req.method === 'POST' ? '{}' : '[]');
+    }, async url => assert.equal(await runDispatch({ ticketsDir: dir, baseUrl: url }), 1, JSON.stringify(invalid)));
+    assert.equal(posts, 0, JSON.stringify(invalid));
+  }
+});
+
+it('rejects duplicate identities, self-dependencies, unknown dependencies and cycles before any POST', async () => {
+  const cases = [
+    [{ ticket: 'a' }, { ticket: 'a' }],
+    [{ ticket: 'a', blockedBy: ['a'] }],
+    [{ ticket: 'a' }, { ticket: 'b', blockedBy: ['unknown'] }],
+    [{ ticket: 'a' }, { ticket: 'b', blockedBy: ['c'] }, { ticket: 'c', blockedBy: ['b'] }],
+  ];
+  for (const items of cases) {
+    const dir = scratch();
+    items.forEach((item, index) => writeFileSync(join(dir, `${index}.json`), JSON.stringify({ type: 'task', status: 'ready-for-agent', prompt: 'work', ...item })));
+    let posts = 0;
+    await board((req, res) => {
+      if (req.method === 'POST') posts++;
+      res.setHeader('content-type', 'application/json');
+      res.statusCode = req.method === 'POST' ? 201 : 200;
+      res.end(req.method === 'POST' ? '{}' : '[]');
+    }, async url => assert.equal(await runDispatch({ ticketsDir: dir, baseUrl: url }), 1));
+    assert.equal(posts, 0);
+  }
+});
+
+it('graph validation allows identical ticket names in distinct projects and preserves pending status values', async () => {
+  const { validateTicketGraph, ticketRequestKey } = await import('../scripts/dispatch-tickets.mjs');
+  const tickets = [
+    { ticket: 'a', projectId: 'p', prompt: 'x', status: 'pending', source: 'p.json' },
+    { ticket: 'a', projectId: 'q', prompt: 'x', status: 'in_progress', source: 'q.json' },
+  ];
+  assert.doesNotThrow(() => validateTicketGraph(tickets, []));
+  assert.notEqual(ticketRequestKey('/tickets', tickets[0]), ticketRequestKey('/tickets', tickets[1]));
+  assert.throws(() => validateTicketGraph([
+    { ticket: 'a', prompt: 'x', source: 'a.json', blockedBy: ['b'] },
+    { ticket: 'b', prompt: 'x', source: 'b.json', blockedBy: ['c'] },
+    { ticket: 'c', prompt: 'x', source: 'c.json', blockedBy: ['a'] },
+  ], []), /a -> b -> c -> a/);
 });
