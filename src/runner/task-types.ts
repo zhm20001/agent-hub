@@ -2,6 +2,12 @@ export type TaskStatus = 'RUNNING' | 'COMPLETED' | 'FAILED' | 'KILLED' | 'TIMEOU
 
 export interface TaskMeta {
   taskId: string;
+  request_key?: string;
+  projectId?: string;
+  parentTaskId?: string;
+  dependsOn?: string[];
+  handoff?: boolean;
+  originalPrompt?: string;
   ticket?: string;
   label: string;
   prompt: string;

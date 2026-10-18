@@ -53,7 +53,9 @@ export function resolveMaxConcurrent(env: NodeJS.ProcessEnv = process.env): numb
  * Unreadable / missing meta entries are skipped (not counted).
  */
 export function countRunningTasks(runsDir: string = defaultRunsDir()): number {
-  return new TaskStore(runsDir).list().filter(task => task.status === 'RUNNING').length;
+  const store = new TaskStore(runsDir);
+  try { return store.list().filter(task => task.status === 'RUNNING').length; }
+  finally { store.close(); }
 }
 
 /**

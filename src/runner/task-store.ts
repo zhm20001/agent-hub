@@ -1,11 +1,69 @@
 import { mkdirSync, readdirSync, readFileSync, openSync, closeSync, fstatSync, readSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
+import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { atomicWrite, readJson, withFileLock } from './file-storage.ts';
 import type { TaskMeta } from './task-types.ts';
 
-/** A concrete file store. Construct with a temporary directory for isolated use. */
+export interface TaskEvent { seq: number; taskId: string; type: string; payload: unknown; createdAt: number }
+
+/** SQLite owns registered state; JSON remains a readable compatibility artifact. */
 export class TaskStore {
   readonly runsDir: string;
+  private connection?: DatabaseSync;
+  get database(): DatabaseSync {
+    if (this.connection) return this.connection;
+    this.ensure();
+    const db = new DatabaseSync(join(this.runsDir, 'hub.sqlite'));
+    db.exec(`PRAGMA busy_timeout=10000; PRAGMA journal_mode=WAL;
+      CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, meta TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS task_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL);
+      CREATE UNIQUE INDEX IF NOT EXISTS completion_once ON task_events(task_id) WHERE type='completion';
+      CREATE TABLE IF NOT EXISTS dispatch_requests (request_key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, task_id TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS consumer_cursors (id TEXT PRIMARY KEY, seq INTEGER NOT NULL);
+    `);
+    this.connection = db;
+    return db;
+  }
+  close(): void { this.connection?.close(); this.connection = undefined; }
+  private save(meta: TaskMeta, type: string): void {
+    const db = this.database;
+    db.exec('SAVEPOINT task_meta_write');
+    try {
+      db.prepare('INSERT INTO tasks(id,meta) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET meta=excluded.meta').run(meta.taskId, JSON.stringify(meta));
+      this.appendEvent(meta.taskId, type, meta);
+      db.exec('RELEASE task_meta_write');
+    } catch (error) { db.exec('ROLLBACK TO task_meta_write'); db.exec('RELEASE task_meta_write'); throw error; }
+  }
+  appendEvent(taskId: string, type: string, payload: unknown): number {
+    if (type === 'completion') {
+      const existing = this.database.prepare("SELECT seq FROM task_events WHERE task_id=? AND type='completion'").get(taskId);
+      if (existing) return Number(existing.seq);
+    }
+    return Number(this.database.prepare('INSERT OR IGNORE INTO task_events(task_id,type,payload,created_at) VALUES (?,?,?,?)').run(taskId, type, JSON.stringify(payload), Date.now()).lastInsertRowid);
+  }
+  events(options: { after?: number; taskId?: string; limit?: number } = {}): TaskEvent[] {
+    if (!existsSync(this.runsDir)) return [];
+    const limit = Math.min(10000, Math.max(1, Math.floor(options.limit ?? 1000)));
+    const rows = this.database.prepare('SELECT * FROM task_events WHERE seq > ? AND (? IS NULL OR task_id = ?) ORDER BY seq LIMIT ?').all(options.after ?? 0, options.taskId ?? null, options.taskId ?? null, limit);
+    return rows.map(row => ({ seq: Number(row.seq), taskId: String(row.task_id), type: String(row.type), payload: JSON.parse(String(row.payload)), createdAt: Number(row.created_at) }));
+  }
+  consumerCursor(id: string): number {
+    if (!existsSync(this.runsDir)) return 0;
+    const row = this.database.prepare('SELECT seq FROM consumer_cursors WHERE id=?').get(id);
+    return Number(row?.seq ?? 0);
+  }
+  acknowledge(id: string, seq: number): void {
+    if (!Number.isSafeInteger(seq) || seq < 0) throw new Error('Invalid event cursor');
+    this.database.prepare('INSERT INTO consumer_cursors(id,seq) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET seq=max(seq,excluded.seq)').run(id, seq);
+  }
+  request(key: string): { fingerprint: string; taskId: string } | null {
+    const row = this.database.prepare('SELECT fingerprint,task_id FROM dispatch_requests WHERE request_key=?').get(key);
+    return row ? { fingerprint: String(row.fingerprint), taskId: String(row.task_id) } : null;
+  }
+  reserveRequest(key: string, fingerprint: string, taskId: string): void {
+    this.database.prepare('INSERT INTO dispatch_requests(request_key,fingerprint,task_id) VALUES (?,?,?)').run(key, fingerprint, taskId);
+  }
   constructor(runsDir: string) { this.runsDir = resolve(runsDir); }
   ensure(): void { mkdirSync(this.runsDir, { recursive: true }); }
   dir(id: string): string {
@@ -13,10 +71,24 @@ export class TaskStore {
     return join(this.runsDir, id);
   }
   reserve(id: string): void { this.ensure(); mkdirSync(this.dir(id)); }
-  read(id: string): TaskMeta | null { return readJson<TaskMeta>(join(this.dir(id), 'meta.json')); }
+  read(id: string): TaskMeta | null {
+    const path = join(this.dir(id), 'meta.json');
+    if (!existsSync(this.runsDir)) return null;
+    const row = this.database.prepare('SELECT meta FROM tasks WHERE id=?').get(id);
+    if (row) return JSON.parse(String(row.meta));
+    const legacy = readJson<TaskMeta>(path);
+    if (!legacy || legacy.taskId !== id) return null;
+    const inserted = this.database.prepare('INSERT OR IGNORE INTO tasks(id,meta) VALUES (?,?)').run(id, JSON.stringify(legacy));
+    if (inserted.changes) this.appendEvent(id, 'task.imported', legacy);
+    return JSON.parse(String(this.database.prepare('SELECT meta FROM tasks WHERE id=?').get(id)!.meta));
+  }
   list(): TaskMeta[] {
-    try { return readdirSync(this.runsDir, { withFileTypes: true }).filter(e => e.isDirectory())
-      .flatMap(e => { try { const meta = this.read(e.name); return meta ? [meta] : []; } catch { return []; } }); }
+    try {
+      for (const entry of readdirSync(this.runsDir, { withFileTypes: true })) {
+        if (entry.isDirectory()) { try { this.read(entry.name); } catch {} }
+      }
+      return this.database.prepare('SELECT meta FROM tasks').all().map(row => JSON.parse(String(row.meta)));
+    }
     catch { return []; }
   }
   create(meta: TaskMeta): TaskMeta { this.reserve(meta.taskId); this.writeInitial(meta); return meta; }
@@ -24,6 +96,7 @@ export class TaskStore {
   writeInitial(meta: TaskMeta): void {
     if (this.read(meta.taskId)) throw new Error(`Task already exists: ${meta.taskId}`);
     atomicWrite(join(this.dir(meta.taskId), 'meta.json'), JSON.stringify(meta, null, 2));
+    this.save(meta, 'task.created');
   }
   update(id: string, patch: Partial<TaskMeta> | ((current: TaskMeta) => Partial<TaskMeta>)): TaskMeta | null {
     const dir = this.dir(id);
@@ -39,6 +112,7 @@ export class TaskStore {
         if (current.endTime !== undefined) updated.endTime = current.endTime;
       }
       atomicWrite(join(dir, 'meta.json'), JSON.stringify(updated, null, 2));
+      this.save(updated, 'task.updated');
       return updated;
     });
   }

@@ -15,14 +15,8 @@ import { recordedProcessPid, recordedProcessExit, abandonUnclaimedLaunch } from 
 
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { defaultTaskStore } from './task-store.ts';
-import {
-  SWARM_RUNS_DIR,
-  readTaskMeta,
-  updateTaskMeta,
-  completeTask,
-  type TaskMeta,
-} from './detached.ts';
+import { TaskStore } from './task-store.ts';
+import { defaultEngine, createTaskEngine, type TaskEngine, type TaskMeta } from './detached.ts';
 import { isProcessAlive } from './timeout-policy.ts';
 
 /** Note written into report.md when reconcile settles a missed close. */
@@ -38,9 +32,9 @@ export interface ReconcileResult {
  * True when this RUNNING task should be treated as finished on disk:
  * no usable pid, or the OS says the pid is gone.
  */
-export function isOrphanRunning(meta: TaskMeta): boolean {
+export function isOrphanRunning(meta: TaskMeta, engine: TaskEngine = defaultEngine): boolean {
   if (meta.status !== 'RUNNING') return false;
-  const pid = meta.pid ?? recordedProcessPid(defaultTaskStore.dir(meta.taskId));
+  const pid = meta.pid ?? recordedProcessPid(engine.store.dir(meta.taskId));
   if (isProcessAlive(pid)) return false;
   if (!pid && isProcessAlive(meta.launchOwnerPid)) return false;
   return true;
@@ -50,18 +44,18 @@ export function isOrphanRunning(meta: TaskMeta): boolean {
  * Settle one orphan RUNNING task: COMPLETED + settlement/harvest path.
  * No-op (returns null) when not RUNNING or the process is still alive.
  */
-export function reconcileOrphanTask(taskId: string): TaskMeta | null {
-  const meta = readTaskMeta(taskId);
+export function reconcileOrphanTask(taskId: string, engine: TaskEngine = defaultEngine): TaskMeta | null {
+  const meta = engine.readTaskMeta(taskId);
   if (meta === null || meta.status !== 'RUNNING') return null;
-  let recordedPid = meta.pid ?? recordedProcessPid(defaultTaskStore.dir(taskId));
+  let recordedPid = meta.pid ?? recordedProcessPid(engine.store.dir(taskId));
   if (!recordedPid && meta.launchOwnerPid && !isProcessAlive(meta.launchOwnerPid)) {
-    abandonUnclaimedLaunch(defaultTaskStore.dir(taskId));
-    recordedPid = recordedProcessPid(defaultTaskStore.dir(taskId));
+    abandonUnclaimedLaunch(engine.store.dir(taskId));
+    recordedPid = recordedProcessPid(engine.store.dir(taskId));
   }
-  if (!meta.pid && recordedPid) updateTaskMeta(taskId, { pid: recordedPid, launchOwnerPid: undefined });
-  if (!isOrphanRunning({ ...meta, pid: recordedPid })) return null;
-  const actual = recordedProcessExit(defaultTaskStore.dir(taskId));
-  return completeTask(taskId, { status: actual && actual.exitCode !== 0 ? 'FAILED' : 'COMPLETED',
+  if (!meta.pid && recordedPid) engine.updateTaskMeta(taskId, { pid: recordedPid, launchOwnerPid: undefined });
+  if (!isOrphanRunning({ ...meta, pid: recordedPid }, engine)) return null;
+  const actual = recordedProcessExit(engine.store.dir(taskId));
+  return engine.completeTask(taskId, { status: actual && actual.exitCode !== 0 ? 'FAILED' : 'COMPLETED',
     ...actual, note: RECONCILE_NOTE });
 }
 
@@ -70,22 +64,27 @@ export function reconcileOrphanTask(taskId: string): TaskMeta | null {
  * Safe to call on every board list / watchdog tick (idempotent for live PIDs).
  */
 export function reconcileOrphanRunningTasks(
-  runsDir: string = SWARM_RUNS_DIR,
+  source: string | TaskEngine = defaultEngine,
 ): ReconcileResult {
+  const engine = typeof source === 'string' ? (source === defaultEngine.store.runsDir ? defaultEngine : createTaskEngine({ store: new TaskStore(source) })) : source;
+  const runsDir = engine.store.runsDir;
   const repaired: TaskMeta[] = [];
   if (!existsSync(runsDir)) return { repaired };
 
-  for (const meta of defaultTaskStore.list()) {
+  for (const meta of engine.store.list()) {
     try {
       if (meta.status !== 'RUNNING') {
-        if (!existsSync(join(defaultTaskStore.dir(meta.taskId), 'completion.json'))) {
-          completeTask(meta.taskId, { status: meta.status });
+        if (!existsSync(join(engine.store.dir(meta.taskId), 'completion.json'))) {
+          engine.completeTask(meta.taskId, { status: meta.status });
+        } else {
+          engine.store.appendEvent(meta.taskId, 'completion', { status: meta.status });
         }
       } else {
-        const fixed = reconcileOrphanTask(meta.taskId);
+        const fixed = reconcileOrphanTask(meta.taskId, engine);
         if (fixed !== null) repaired.push(fixed);
       }
     } catch { /* A corrupt task must not stop recovery of other tasks. */ }
   }
+  if (typeof source === 'string' && engine !== defaultEngine) engine.store.close();
   return { repaired };
 }

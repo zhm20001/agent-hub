@@ -28,7 +28,7 @@ test('stores isolate directories, reject duplicate IDs and reject path traversal
     a.update('task-one', { status: 'RUNNING', endTime: 20, modelId: 'model' });
     assert.deepEqual(a.read('task-one'), { ...meta('task-one'), status: 'KILLED', endTime: 10, archived: true, modelId: 'model' });
     assert.equal(a.list().length, 1);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }); }
 });
 test('cross-process updates merge the latest data while readers only see complete JSON', async () => {
   const root = mkdtempSync(join(tmpdir(), 'hub-store-')); const store = new TaskStore(root);
@@ -48,7 +48,7 @@ test('cross-process updates merge the latest data while readers only see complet
     mkdirSync(join(root, 'counter/.meta.lock'));
     writeFileSync(join(root, 'counter/.meta.lock/2147483646-aaaaaaaa.json'), JSON.stringify({ number: 1 }));
     store.update('counter', { archived: true }); assert.equal(store.read('counter')?.archived, true);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }); }
 });
 test('parallel dispatcher processes share one admission lock and cannot reuse IDs', async () => {
   const root = mkdtempSync(join(tmpdir(), 'hub-admission-'));
@@ -60,7 +60,7 @@ test('parallel dispatcher processes share one admission lock and cannot reuse ID
     `, root, { AGENT_HUB_TASK_ROOTS: realpathSync(root), AGENT_HUB_MAX_CONCURRENT: '1' })));
     assert.equal(results.filter(s => s.trim() === 'RUNNING').length, 1);
     assert.equal(results.filter(s => s.trim() === 'REFUSED').length, 3);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }); }
 });
 
 test('a dead dispatcher lock is recovered before admitting another task', async () => {
@@ -71,7 +71,7 @@ test('a dead dispatcher lock is recovered before admitting another task', async 
     writeFileSync(join(root, '.dispatch.lock/2147483646-aaaaaaaa.json'), JSON.stringify({ number: 1 }));
     assert.equal(store.withDispatchLock(() => 'admitted'), 'admitted');
     assert.equal(existsSync(join(root, '.dispatch.lock')), false);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }); }
 });
 
 test('recovery may fill an absent end time but cannot replace a recorded one', () => {
@@ -81,5 +81,5 @@ test('recovery may fill an absent end time but cannot replace a recorded one', (
     assert.equal(store.update('ended', { endTime: 50 })?.endTime, 50);
     assert.equal(store.update('ended', { endTime: 99, status: 'RUNNING' })?.endTime, 50);
     assert.equal(store.read('ended')?.status, 'COMPLETED');
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }); }
 });

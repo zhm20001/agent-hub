@@ -33,7 +33,6 @@ import { getTaskDir, readResolution, readTaskMeta, spawnDetachedTask } from '../
 import { TranscriptUnavailableError, readTranscript } from '../src/runner/readback.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(HERE, '..');
 const FIXTURE_ZCODE = resolve(HERE, 'fixtures', 'fake-zcode.cjs');
 const FIXTURE_APPSERVER = resolve(HERE, 'fixtures', 'fake-faceb-appserver.cjs');
 
@@ -345,9 +344,9 @@ describe('11c · the transcript pointer opens', () => {
 
     const { ZCODE_CLI_PATH: _unused, ...env } = process.env;
     const child = spawn(process.execPath, [
-      '--import', 'tsx', 'src/runner/read-transcript.ts', taskId, '--cli', appServer.cli,
+      '--import', import.meta.resolve('tsx'), new URL('../src/runner/read-transcript.ts', import.meta.url).pathname, taskId, '--cli', appServer.cli,
     ], {
-      cwd: REPO_ROOT,
+      cwd: process.cwd(),
       env: { ...env, FAKE_APPSERVER_TEXT: '11c human-readable transcript' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });

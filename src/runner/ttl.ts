@@ -1,13 +1,7 @@
-import { defaultTaskStore } from './task-store.ts';
+import { adapterForSettlement } from '../adapters/registry.ts';
 import { existsSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
-import {
-  SWARM_RUNS_DIR,
-  updateTaskMeta,
-  terminateTask,
-  getTaskDir,
-  readResolution,
-} from './detached.ts';
+import { defaultEngine, type TaskEngine } from './detached.ts';
 import { decideWatchdogAction } from './timeout-policy.ts';
 import { locateRunTranscript } from './transcript.ts';
 import { reconcileOrphanRunningTasks } from './reconcile.ts';
@@ -16,7 +10,7 @@ export class TtlWatchdog {
   private timer: NodeJS.Timeout | null = null;
   private intervalMs: number;
 
-  constructor(intervalMs: number = 10_000) {
+  constructor(intervalMs: number = 10_000, readonly engine: TaskEngine = defaultEngine) {
     this.intervalMs = intervalMs;
   }
 
@@ -37,13 +31,13 @@ export class TtlWatchdog {
   }
 
   checkTimeouts(): void {
-    if (!existsSync(SWARM_RUNS_DIR)) return;
+    if (!existsSync(this.engine.store.runsDir)) return;
 
     try {
       // Periodic: settle orphans before TTL decisions (dead PID ≠ timeout kill).
-      reconcileOrphanRunningTasks();
-      const tasks = defaultTaskStore.list();
-      const now = Date.now();
+      reconcileOrphanRunningTasks(this.engine);
+      const tasks = this.engine.store.list();
+      const now = this.engine.now();
 
       for (const meta of tasks) {
         const taskId = meta.taskId;
@@ -51,9 +45,11 @@ export class TtlWatchdog {
 
         const timeoutSec = meta.timeout || 7200;
         const elapsedMs = now - meta.startTime;
-        const taskDir = getTaskDir(taskId);
-        const record = readResolution(taskId);
-        const { transcriptPath } = locateRunTranscript(record, meta);
+        const taskDir = this.engine.getTaskDir(taskId);
+        const record = this.engine.readResolution(taskId);
+        let adapter;
+        try { adapter = this.engine.getAdapter(meta.adapter); } catch { adapter = adapterForSettlement(meta.adapter); }
+        const { transcriptPath } = locateRunTranscript(record, meta, { adapter });
 
         const decision = decideWatchdogAction({
           elapsedMs,
@@ -63,6 +59,7 @@ export class TtlWatchdog {
           taskDir,
           transcriptPath,
           now,
+          env: this.engine.env,
         });
 
         if (decision.action === 'wait') continue;
@@ -78,7 +75,7 @@ export class TtlWatchdog {
           try {
             appendFileSync(rawLogPath, note, 'utf8');
           } catch {}
-          updateTaskMeta(taskId, {
+          this.engine.updateTaskMeta(taskId, {
             timeout: newTimeout,
             timeoutExtended: true,
           });
@@ -92,7 +89,7 @@ export class TtlWatchdog {
           appendFileSync(rawLogPath, timeoutWarning, 'utf8');
         } catch {}
 
-        terminateTask(taskId, 'timeout');
+        this.engine.terminateTask(taskId, 'timeout');
       }
     } catch {}
   }

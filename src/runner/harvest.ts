@@ -1,3 +1,4 @@
+import { defaultEngine, type TaskEngine } from './detached.ts';
 import { lastAssistantText, type TranscriptDocument } from './transcript-document.ts';
 /**
  * Mechanical harvest for the board Report view (ADR-0002).
@@ -19,7 +20,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { FinalText } from '../adapters/contract.ts';
 import { writeRunRecord, type RunRecord } from './settlement.ts';
-import { getTaskDir, readTaskMeta } from './detached.ts';
+import { adapterForSettlement } from '../adapters/registry.ts';
 import { locateRunTranscript, type LocatedRunTranscript } from './transcript.ts';
 
 /** Env var: override last-turn display cap (default {@link DEFAULT_LAST_TURN_CAP}). */
@@ -108,12 +109,17 @@ function textFromFinalText(finalText: FinalText | undefined): string | null {
 export function repairTaskTranscript(
   taskId: string,
   record: RunRecord | null,
-  options: { readonly home?: string } = {},
+  options: { readonly home?: string; readonly engine?: TaskEngine } = {},
 ): LocatedRunTranscript {
-  const located = locateRunTranscript(record, readTaskMeta(taskId) ?? {}, options);
+  const engine = options.engine ?? defaultEngine;
+  const meta = engine.readTaskMeta(taskId);
+  const adapterName = meta?.adapter ?? 'zcode';
+  let adapter;
+  try { adapter = engine.getAdapter(adapterName); } catch { adapter = adapterForSettlement(adapterName); }
+  const located = locateRunTranscript(record, meta ?? {}, { ...options, adapter });
   if (located.record !== null && located.record !== record) {
     try {
-      writeRunRecord(getTaskDir(taskId), located.record);
+      writeRunRecord(engine.getTaskDir(taskId), located.record);
     } catch {
       // Best effort: presentation still uses the located path.
     }
@@ -160,7 +166,7 @@ export function projectHarvest(
  * secondary "open JSON" target for demos when no conversation transcript is on
  * disk yet. Not a conversation; callers should label it accordingly.
  */
-export function resolutionJsonPath(taskId: string): string | null {
-  const path = join(getTaskDir(taskId), 'resolution.json');
+export function resolutionJsonPath(taskId: string, engine: TaskEngine = defaultEngine): string | null {
+  const path = join(engine.getTaskDir(taskId), 'resolution.json');
   return existsSync(path) ? path : null;
 }
