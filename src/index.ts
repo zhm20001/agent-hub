@@ -5,6 +5,11 @@
  */
 
 import type { DshContext, DshAgent } from './types/dsh.ts';
+import { createHub, type Hub } from './hub.ts';
+export { createHub } from './hub.ts';
+export type { Hub, HubOptions } from './hub.ts';
+export { startServer } from './server.ts';
+export { registerSwarmTools } from './tools.ts';
 import { registerSwarmTools } from './tools.ts';
 import { startServer, type RunningServer, type ServerOptions } from './server.ts';
 
@@ -13,32 +18,27 @@ export const inject = ['tools'];
 
 let activeRun: Promise<RunningServer> | null = null;
 let cleanup: Promise<void> = Promise.resolve();
-let currentAgent: DshAgent | undefined = undefined;
+
 
 /**
  * DSH Plugin apply hook.
  */
-export function apply(ctx: DshContext, config: ServerOptions & { port?: number } = {}): void {
+export function apply(ctx: DshContext, config: ServerOptions & { port?: number; activeAgentGetter?: () => DshAgent | undefined } = {}): void {
   if (activeRun) return;
-  // Register tools on ctx.tools
-  registerSwarmTools(ctx, () => currentAgent);
-
-  // When a task finishes in .swarm-runs/, notify active DSH agent if present
-  const onCompletion: NonNullable<ServerOptions['onCompletion']> = (meta, report) => {
-    if (currentAgent && currentAgent.inject) {
-      try {
-        currentAgent.inject({
-          type: 'text',
-          text: `[Swarm Notice] Task ${meta.taskId} (${meta.ticket || 'NO-TICKET'}) finished with status: ${meta.status}.\n\n${report}`,
-        });
-      } catch (err) {
-        ctx.logger?.warn?.('[Swarm] Failed to inject completion notice to agent:', err);
-      }
-    }
-  };
-
-  // Start HTTP / SSE Web workspace
-  const starting = cleanup.then(() => startServer(config.port ?? 3000, { ...config, onCompletion }));
+  const hub: Hub = config.hub ?? createHub();
+  registerSwarmTools(ctx, config.activeAgentGetter, hub);
+  const onCompletion: ServerOptions['onCompletion'] = config.onCompletion ?? (config.activeAgentGetter ? async (meta, report) => {
+    const target = config.activeAgentGetter?.();
+    if (!target?.inject) throw new Error('No active agent accepts completion notices; delivery remains pending');
+    await target.inject({ type: 'text',
+      text: `[Swarm Notice] Task ${meta.taskId} (${meta.ticket || 'NO-TICKET'}) ended as ${meta.status}.\n\n${report}` });
+  } : undefined);
+  const starting = cleanup.then(async () => {
+    try {
+      const run = await startServer(config.port ?? 3000, { ...config, hub, onCompletion });
+      return { address: run.address, async close() { try { await run.close(); } finally { if (!config.hub) hub.close(); } } };
+    } catch (error) { if (!config.hub) hub.close(); throw error; }
+  });
   activeRun = starting;
   void starting.catch((err) => {
     if (activeRun === starting) activeRun = null;

@@ -28,9 +28,10 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ taskId, isLive, lang
     eventSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        if (data.text) {
-          setRawLogs((prev) => prev + data.text);
+        if (data.text || data.reset) {
+          setRawLogs((prev) => ((data.reset ? '' : prev) + (data.text ?? '')).slice(-1024 * 1024));
         }
+        setStreamActive(true);
         if (data.done) {
           setStreamActive(false);
           eventSource.close();
@@ -42,7 +43,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ taskId, isLive, lang
 
     eventSource.onerror = () => {
       setStreamActive(false);
-      eventSource.close();
+      // EventSource reconnects with Last-Event-ID; closing here would lose recovery.
     };
 
     return () => {

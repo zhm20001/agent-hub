@@ -1,28 +1,29 @@
-import { getTaskDetail, getTaskConversation, getTaskTranscript, listTasks } from './runner/task-queries.ts';
-import express, { type Request, type Response } from 'express';
-import cors from 'cors';
+import { createHub, defaultHub, type Hub } from './hub.ts';
+import { LogReader } from './runner/log-stream.ts';
+import express, { type Request, type Response, type NextFunction } from 'express';
 import { createServer as createHttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { existsSync, statSync, createReadStream } from 'node:fs';
+import { existsSync, createReadStream } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { exec, execSync } from 'node:child_process';
-import {
-  SWARM_RUNS_DIR,
-  spawnDetachedTask,
-  readTaskMeta,
-  updateTaskMeta,
-  terminateTask,
-  getTaskDir,
-} from './runner/detached.ts';
+import { fileURLToPath } from 'node:url';
+import { exec, execFileSync } from 'node:child_process';
 import { TtlWatchdog } from './runner/ttl.ts';
 import { SwarmRunsWatcher, type TaskCompletionCallback } from './watcher.ts';
 import { CwdNotAllowedError } from './runner/task-roots.ts';
 import { ConcurrentCapError, countRunningTasks, resolveMaxConcurrent } from './runner/concurrency.ts';
-import { resolveDefaultTimeout } from './runner/timeout-policy.ts';
+import { RequestConflictError, DispatchRecoveryRequiredError } from './runner/detached.ts';
+import { UnknownAdapterError } from './adapters/registry.ts';
 
-function createApp() {
+export function createApp(hub: Hub = defaultHub) {
+  const { getTaskDetail, getTaskConversation, getTaskTranscript, listTasks } = hub.queries;
+  const { spawnDetachedTask, readTaskMeta, updateTaskMeta, terminateTask, getTaskDir } = hub.engine;
   const app = express();
-  app.use(cors());
+  // Browser requests stay on the local Hub origin; agent clients need no Origin header.
+  app.use((req, res, next) => {
+    const origin = req.get('origin');
+    if (origin && origin !== `${req.protocol}://${req.get('host')}`) return res.status(403).json({ error: 'Cross-origin requests are not allowed' });
+    next();
+  });
   app.use(express.json());
 
   // API Routes
@@ -41,43 +42,20 @@ function createApp() {
    */
   app.post('/api/tasks/dispatch', (req: Request, res: Response) => {
     try {
-      const { prompt, ticket, label, adapter, mode, cwd, timeout, resumeSessionId } = req.body;
-      if (!prompt || typeof prompt !== 'string') {
-        return res.status(400).json({ error: 'prompt is required' });
-      }
-
-      const meta = spawnDetachedTask({
-        prompt,
-        ticket,
-        label,
-        adapter: adapter || 'zcode',
-        mode: mode || 'edit',
-        cwd: cwd || process.cwd(),
-        timeout: timeout ? parseInt(timeout, 10) : resolveDefaultTimeout(),
-        ...(typeof resumeSessionId === 'string' && resumeSessionId.length > 0
-          ? { resumeSessionId }
-          : {}),
-      });
+      const { prompt, ticket, label, adapter, mode, cwd, timeout, resumeSessionId,
+        request_key, projectId, parentTaskId, dependsOn, handoff } = req.body ?? {};
+      const meta = spawnDetachedTask({ prompt, ticket, label, adapter, mode, cwd, timeout,
+        resumeSessionId, request_key, projectId, parentTaskId, dependsOn, handoff });
 
       res.status(201).json(meta);
-    } catch (err: any) {
-      let status = 500;
-      if (err instanceof CwdNotAllowedError) status = 400;
-      else if (err instanceof ConcurrentCapError) status = 429;
-      res.status(status).json({
-        error: err.message,
-        ...(err instanceof ConcurrentCapError
-          ? { running: err.running, max: err.max, code: 'concurrent_cap' }
-          : {}),
-      });
-    }
+    } catch (error) { sendError(error, res); }
   });
 
   /**
    * GET /api/tasks/:id - get task details, meta and report
    */
   app.get('/api/tasks/:id', (req: Request, res: Response) => {
-    const detail = getTaskDetail(req.params.id);
+    const detail = getTaskDetail(String(req.params.id));
     if (!detail) return res.status(404).json({ error: 'Task not found' });
     res.json(detail);
   });
@@ -86,7 +64,7 @@ function createApp() {
    * POST /api/tasks/:id/kill - kill running process
    */
   app.post('/api/tasks/:id/kill', (req: Request, res: Response) => {
-    const { id } = req.params;
+    const id = String(req.params.id);
     const meta = readTaskMeta(id);
     if (!meta) {
       return res.status(404).json({ error: 'Task not found' });
@@ -107,7 +85,7 @@ function createApp() {
    * Body: { archived?: boolean } — default true.
    */
   app.post('/api/tasks/:id/archive', (req: Request, res: Response) => {
-    const { id } = req.params;
+    const id = String(req.params.id);
     const meta = readTaskMeta(id);
     if (!meta) {
       return res.status(404).json({ error: 'Task not found' });
@@ -124,49 +102,33 @@ function createApp() {
    * GET /api/tasks/:id/stream - SSE live log stream
    */
   app.get('/api/tasks/:id/stream', (req: Request, res: Response) => {
-    const { id } = req.params;
-    const taskDir = getTaskDir(id);
-    const logPath = join(taskDir, 'raw.log');
-
+    const id = String(req.params.id);
+    const reader = new LogReader(join(getTaskDir(id), 'raw.log'), String(req.get('last-event-id') ?? req.query.after ?? 0));
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
-
-    let sentBytes = 0;
-
-    const sendNewChunk = () => {
-      if (!existsSync(logPath)) return;
+    let stopped = false;
+    let timer: NodeJS.Timeout | undefined;
+    const stop = () => { stopped = true; clearTimeout(timer); };
+    const tick = () => {
+      if (stopped) return;
       try {
-        const stats = statSync(logPath);
-        if (stats.size > sentBytes) {
-          const stream = createReadStream(logPath, { start: sentBytes, end: stats.size });
-          sentBytes = stats.size;
-          stream.on('data', (chunk) => {
-            const text = chunk.toString('utf8');
-            res.write(`data: ${JSON.stringify({ text })}\n\n`);
-          });
+        const meta = readTaskMeta(id);
+        const ended = Boolean(meta && meta.status !== 'RUNNING');
+        const chunk = reader.read(ended);
+        let writable = true;
+        if (chunk.text || chunk.reset) writable = res.write(`id: ${reader.eventId}\ndata: ${JSON.stringify(chunk)}\n\n`);
+        if (ended && chunk.caughtUp) {
+          res.write(`data: ${JSON.stringify({ status: meta!.status, done: true })}\n\n`);
+          stop(); res.end(); return;
         }
-      } catch {}
+        if (!writable) res.once('drain', () => { if (!stopped) timer = setTimeout(tick, 0); });
+        else timer = setTimeout(tick, chunk.caughtUp ? 500 : 0);
+      } catch { stop(); res.end(); }
     };
-
-    // Send initial chunk
-    sendNewChunk();
-
-    const interval = setInterval(() => {
-      sendNewChunk();
-      const currentMeta = readTaskMeta(id);
-      if (currentMeta && currentMeta.status !== 'RUNNING') {
-        sendNewChunk();
-        res.write(`data: ${JSON.stringify({ status: currentMeta.status, done: true })}\n\n`);
-        clearInterval(interval);
-        res.end();
-      }
-    }, 500);
-
-    req.on('close', () => {
-      clearInterval(interval);
-    });
+    req.on('close', stop);
+    tick();
   });
 
   /**
@@ -179,7 +141,7 @@ function createApp() {
     return new Promise((resolve) => {
       exec(command, { cwd, maxBuffer: 1024 * 1024 * 5 }, (err, stdout, stderr) => {
         const stderrText = String(stderr || '');
-        const errCode = err ? (err as NodeJS.ErrnoException).code : undefined;
+        const errCode = err ? (err as unknown as { code?: string | number }).code : undefined;
         // shell-wrapped exec yields exit 127 + "not found" rather than ENOENT
         const missing =
           errCode === 'ENOENT' ||
@@ -200,7 +162,7 @@ function createApp() {
    * GET /api/tasks/:id/vcs — prefer Jujutsu (`jj log` + status); git only as fallback.
    */
   app.get('/api/tasks/:id/vcs', async (req: Request, res: Response) => {
-    const { id } = req.params;
+    const id = String(req.params.id);
     const meta = readTaskMeta(id);
     const targetCwd = meta?.cwd || process.cwd();
 
@@ -277,7 +239,7 @@ function createApp() {
 
   /** @deprecated Prefer /vcs — kept for older clients. */
   app.get('/api/tasks/:id/diff', (req: Request, res: Response) => {
-    const { id } = req.params;
+    const id = String(req.params.id);
     res.redirect(307, `/api/tasks/${id}/vcs`);
   });
 
@@ -286,7 +248,7 @@ function createApp() {
    * file manager (Finder on macOS). Local demo helper; does not call the live CLI.
    */
   app.post('/api/tasks/:id/reveal-transcript', (req: Request, res: Response) => {
-    const transcript = getTaskTranscript(req.params.id);
+    const transcript = getTaskTranscript(String(req.params.id));
     if (!transcript) return res.status(404).json({ error: 'Task not found' });
     const target = transcript.transcriptPath ?? transcript.resolutionPath;
 
@@ -299,7 +261,7 @@ function createApp() {
     }
 
     const revealed = revealInFileManager(target);
-    if (!revealed.ok) {
+    if (revealed.ok === false) {
       return res.status(500).json({ error: revealed.error, path: target });
     }
     res.json({
@@ -315,7 +277,7 @@ function createApp() {
    * the server so the browser never downloads a multi‑MB model-io JSONL.
    */
   app.get('/api/tasks/:id/conversation', (req: Request, res: Response) => {
-    const conversation = getTaskConversation(req.params.id);
+    const conversation = getTaskConversation(String(req.params.id));
     if (!conversation) return res.status(404).json({ error: 'Task not found' });
     res.json(conversation);
   });
@@ -325,7 +287,7 @@ function createApp() {
    * in-browser download/view when Finder reveal is unavailable.
    */
   app.get('/api/tasks/:id/transcript-file', (req: Request, res: Response) => {
-    const transcript = getTaskTranscript(req.params.id);
+    const transcript = getTaskTranscript(String(req.params.id));
     if (!transcript) return res.status(404).json({ error: 'Task not found' });
     const target = transcript.transcriptPath ?? transcript.resolutionPath;
     if (target === null || !existsSync(target)) {
@@ -345,28 +307,48 @@ function createApp() {
       status: 'ok',
       uptime: process.uptime(),
       timestamp: Date.now(),
-      runsDir: SWARM_RUNS_DIR,
+      runsDir: hub.store.runsDir,
       concurrent: {
-        running: countRunningTasks(),
-        max: resolveMaxConcurrent(),
+        running: countRunningTasks(hub.store.runsDir),
+        max: resolveMaxConcurrent(hub.engine.env),
       },
     });
   });
 
+  app.get('/api/projects', (_req, res) => res.json(hub.projects.list()));
+  app.post('/api/projects', (req, res) => res.status(201).json(hub.projects.upsert(req.body ?? {})));
+  app.get('/api/projects/:id/context', (req, res) => res.json(hub.projects.context(String(req.params.id), {
+    ...(req.query.after !== undefined ? { after: Number(req.query.after) } : {}),
+    ...(req.query.limit !== undefined ? { limit: Number(req.query.limit) } : {}),
+    ...(req.query.viewerId !== undefined ? { viewerId: String(req.query.viewerId) } : {}),
+  })));
+  app.post('/api/projects/:id/notes', (req, res) => res.status(201).json(hub.projects.appendNote(String(req.params.id), req.body ?? {})));
+  app.post('/api/projects/:id/seen', (req, res) => res.json(hub.projects.markSeen(String(req.params.id), req.body ?? {})));
+  app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => sendError(error, res));
   return app;
+}
+
+function sendError(error: unknown, res: Response) {
+  const err = error as Error & { statusCode?: number; status?: number; running?: number; max?: number };
+  const status = err instanceof RequestConflictError || err instanceof DispatchRecoveryRequiredError ? 409
+    : err instanceof ConcurrentCapError ? 429
+    : err instanceof CwdNotAllowedError || err instanceof UnknownAdapterError ? 400
+    : err.statusCode ?? err.status ?? (/^Invalid (dispatch|task id)/.test(err.message ?? '') ? 400 : 500);
+  res.status(status).json({ error: err.message ?? String(error),
+    ...(err instanceof ConcurrentCapError ? { code: 'concurrent_cap', running: err.running, max: err.max } : {}) });
 }
 
 /** Reveal `path` in the OS file manager. Local-demo helper for macOS Finder. */
 function revealInFileManager(path: string): { ok: true } | { ok: false; error: string } {
   try {
     if (process.platform === 'darwin') {
-      execSync(`open -R ${JSON.stringify(path)}`, { stdio: 'ignore' });
+      execFileSync('open', ['-R', path], { stdio: 'ignore' });
     } else if (process.platform === 'win32') {
-      execSync(`explorer /select,${JSON.stringify(path)}`, { stdio: 'ignore' });
+      execFileSync('explorer', [`/select,${path}`], { stdio: 'ignore' });
     } else {
       // Linux: open the containing directory
       const dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) || '/' : '.';
-      execSync(`xdg-open ${JSON.stringify(dir)}`, { stdio: 'ignore' });
+      execFileSync('xdg-open', [dir], { stdio: 'ignore' });
     }
     return { ok: true };
   } catch (err: any) {
@@ -382,6 +364,9 @@ export interface RunningServer {
 
 export interface ServerOptions {
   host?: string;
+  hub?: Hub;
+  /** Stable identity of the notification destination; enables restart replay. */
+  consumerId?: string;
   /** Disable frontend hosting when embedding only the HTTP task interface. */
   frontend?: boolean;
   onCompletion?: TaskCompletionCallback;
@@ -392,10 +377,11 @@ export async function startServer(
   port: number = Number(process.env.PORT || 3000),
   options: ServerOptions = {},
 ): Promise<RunningServer> {
-  const app = createApp();
+  const hub = options.hub ?? createHub();
+  const app = createApp(hub);
   const httpServer = createHttpServer(app);
-  const watchdog = new TtlWatchdog(10_000);
-  const watcher = new SwarmRunsWatcher();
+  const watchdog = new TtlWatchdog(10_000, hub.engine);
+  const watcher = new SwarmRunsWatcher(hub.store, { consumerId: options.consumerId, onError: error => console.warn('[Agent Hub] Completion delivery pending:', error) });
   const unsubscribe = options.onCompletion ? watcher.subscribe(options.onCompletion) : undefined;
   let vite: import('vite').ViteDevServer | undefined;
   let closing: Promise<void> | undefined;
@@ -408,26 +394,30 @@ export async function startServer(
       vite?.close(),
       new Promise<void>((resolve, reject) => {
         httpServer.close((error) => {
-          if (error && error.code !== 'ERR_SERVER_NOT_RUNNING') reject(error);
+          if (error && (error as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') reject(error);
           else resolve();
         });
         // SSE connections otherwise keep close() waiting indefinitely.
         httpServer.closeAllConnections();
       }),
     ]);
+    if (!options.hub) hub.close();
     const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
     if (errors.length) throw new AggregateError(errors, 'Failed to close hub resources');
   })();
 
   try {
     if (options.frontend !== false) {
-      const distDir = resolve(process.cwd(), 'dist');
-      if (process.env.NODE_ENV === 'production' && existsSync(distDir)) {
+      const appRoot = fileURLToPath(new URL('../', import.meta.url));
+      const distDir = resolve(appRoot, 'dist');
+      const packaged = fileURLToPath(import.meta.url).endsWith('/lib/server.js');
+      if ((packaged || process.env.NODE_ENV === 'production') && existsSync(distDir)) {
         app.use(express.static(distDir));
         app.get('*', (_req, res) => res.sendFile(join(distDir, 'index.html')));
       } else {
         const { createServer: createViteServer } = await import('vite');
         vite = await createViteServer({
+          root: appRoot,
           // Share this runtime's listener, including HMR; no global Vite port.
           server: { middlewareMode: true, hmr: { server: httpServer } },
           appType: 'spa',
@@ -439,7 +429,7 @@ export async function startServer(
     await new Promise<void>((resolve, reject) => {
       const onError = (error: Error) => reject(error);
       httpServer.once('error', onError);
-      httpServer.listen(port, options.host ?? '0.0.0.0', () => {
+      httpServer.listen(port, options.host ?? '127.0.0.1', () => {
         httpServer.off('error', onError);
         resolve();
       });
