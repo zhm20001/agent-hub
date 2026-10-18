@@ -16,6 +16,7 @@
  *   Type must be task AND status must be ready-for-agent
  *   (body Type:/Status: lines, or frontmatter type/status/label).
  */
+import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, extname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -151,7 +152,9 @@ export function applyDefaults(ticket, defaults) {
  *   mode?: string,
  *   cwd?: string,
  *   timeout?: number,
- *   blockedBy?: string[],
+ *   blockedBy?: (string | {ticket: string, condition: 'completed' | 'ended' | 'self-report-success'})[],
+ *   projectId?: string,
+ *   handoff?: boolean,
  *   parallel?: boolean,
  *   type?: string,
  *   status?: string,
@@ -183,7 +186,9 @@ export function loadTicket(filePath) {
       mode: typeof obj.mode === 'string' ? obj.mode : undefined,
       cwd: typeof obj.cwd === 'string' ? obj.cwd : undefined,
       timeout: typeof obj.timeout === 'number' ? obj.timeout : undefined,
-      blockedBy: Array.isArray(obj.blockedBy) ? obj.blockedBy.map(String) : [],
+      blockedBy: normalizeBlockers(obj.blockedBy),
+      projectId: typeof obj.projectId === 'string' ? obj.projectId : undefined,
+      handoff: obj.handoff === true,
       parallel: obj.parallel !== false,
       type: typeof obj.type === 'string' ? obj.type : undefined,
       status: typeof obj.status === 'string' ? obj.status : undefined,
@@ -221,7 +226,9 @@ export function loadTicket(filePath) {
       mode: typeof parsed.meta.mode === 'string' ? parsed.meta.mode : undefined,
       cwd: typeof parsed.meta.cwd === 'string' ? parsed.meta.cwd : undefined,
       timeout: typeof parsed.meta.timeout === 'number' ? parsed.meta.timeout : undefined,
-      blockedBy: Array.isArray(parsed.meta.blockedBy) ? parsed.meta.blockedBy.map(String) : [],
+      blockedBy: normalizeBlockers(parsed.meta.blockedBy),
+      projectId: typeof parsed.meta.projectId === 'string' ? parsed.meta.projectId : undefined,
+      handoff: parsed.meta.handoff === true,
       parallel: parsed.meta.parallel !== false,
       type: typeof parsed.meta.type === 'string' ? parsed.meta.type : undefined,
       status: typeof parsed.meta.status === 'string' ? parsed.meta.status : undefined,
@@ -234,45 +241,63 @@ export function loadTicket(filePath) {
   return null;
 }
 
-/**
- * Ticket ids that already have a COMPLETED task in .swarm-runs (mechanical).
- * Also track any ticket that already has a task at all (avoid re-dispatch).
- * @returns {{ completed: Set<string>, dispatched: Set<string> }}
- */
-export function readSwarmTicketState(cwd = process.cwd()) {
-  const runsDir = resolve(cwd, '.swarm-runs');
-  const completed = new Set();
-  const dispatched = new Set();
-  if (!existsSync(runsDir)) return { completed, dispatched };
-  for (const entry of readdirSync(runsDir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const metaPath = join(runsDir, entry.name, 'meta.json');
-    if (!existsSync(metaPath)) continue;
-    try {
-      const meta = JSON.parse(readFileSync(metaPath, 'utf8'));
-      if (typeof meta.ticket === 'string' && meta.ticket.length > 0) {
-        dispatched.add(meta.ticket);
-        if (meta.status === 'COMPLETED') completed.add(meta.ticket);
-      }
-    } catch {
-      // skip
+/** A string preserves the legacy mechanical COMPLETED gate. No content judgment. */
+export function normalizeBlockers(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error('blockedBy must be an array');
+  return value.map(blocker => {
+    if (typeof blocker === 'string' && blocker.trim()) return blocker;
+    if (!blocker || typeof blocker !== 'object' || Array.isArray(blocker)
+      || typeof blocker.ticket !== 'string' || !blocker.ticket.trim()
+      || !['completed', 'ended', 'self-report-success'].includes(blocker.condition)
+      || Object.keys(blocker).some(key => !['ticket','condition'].includes(key))) {
+      throw new Error('Invalid blockedBy condition; use a ticket string or {ticket, condition: completed|ended|self-report-success}');
     }
-  }
-  return { completed, dispatched };
+    return { ticket: blocker.ticket, condition: blocker.condition };
+  });
 }
 
-/**
- * @param {Ticket} ticket
- * @param {Set<string>} completed
- * @param {Set<string>} dispatched
- */
-export function isEligible(ticket, completed, dispatched) {
-  const id = ticket.ticket;
-  if (id && dispatched.has(id)) return { ok: false, reason: 'already-dispatched' };
-  const blockers = ticket.blockedBy ?? [];
-  const unmet = blockers.filter((b) => !completed.has(b));
-  if (unmet.length > 0) return { ok: false, reason: `blocked-by:${unmet.join(',')}` };
-  return { ok: true, reason: 'eligible' };
+export function isEligible(ticket, completed, dispatched, records = new Map()) {
+  if (ticket.ticket && dispatched.has(ticket.ticket)) return { ok:false, reason:'already-dispatched' };
+  const blockers=normalizeBlockers(ticket.blockedBy);
+  const unmet=blockers.filter(blocker => {
+    const id=typeof blocker === 'string' ? blocker : blocker.ticket;
+    const condition=typeof blocker === 'string' ? 'completed' : blocker.condition;
+    const task=records.get(id);
+    if (condition === 'completed') return !completed.has(id);
+    if (condition === 'ended') return !task || !['COMPLETED','FAILED','KILLED','TIMEOUT_KILLED'].includes(task.status);
+    return !(task?.status === 'COMPLETED' && task.handoff?.state === 'reported' && task.handoff?.selfReport?.status === 'success');
+  });
+  return unmet.length ? {ok:false,reason:`blocked-by:${unmet.map(b=>typeof b === 'string'?b:b.ticket).join(',')}`} : {ok:true,reason:'eligible'};
+}
+
+/** Always consult the selected board, including archived tickets; never local runtime files. */
+export async function readBoardTicketState(baseUrl) {
+  const roster=await getBoardJson(baseUrl, '/api/tasks?includeArchived=1');
+  if (!Array.isArray(roster) || roster.some(task => !task || typeof task.taskId !== 'string' || typeof task.status !== 'string')) throw new Error('Invalid board roster response');
+  return { roster, ...ticketState(roster) };
+}
+
+function ticketState(roster) {
+  const records=new Map();
+  // Multiple attempts must never accidentally select an older successful run.
+  for (const task of roster) {
+    if (typeof task.ticket !== 'string') continue;
+    const previous=records.get(task.ticket);
+    if (!previous || (task.startTime ?? 0) > (previous.startTime ?? 0)) records.set(task.ticket, task);
+  }
+  return { records, completed:new Set([...records].filter(([,task])=>task.status==='COMPLETED').map(([id])=>id)), dispatched:new Set(records.keys()) };
+}
+
+async function getBoardJson(baseUrl, path) {
+  const res=await fetch(`${baseUrl.replace(/\/$/,'')}${path}`);
+  if (!res.ok) throw new Error(`Board ${path} HTTP ${res.status}: ${await res.text()}`);
+  try { return await res.json(); } catch { throw new Error(`Board ${path} returned invalid JSON`); }
+}
+
+/** Same ticket identity always maps to the same request; changed content must conflict, not silently rerun. */
+export function ticketRequestKey(ticketsDir, ticket) {
+  return 'ticket-'+createHash('sha256').update(JSON.stringify([resolve(ticketsDir),ticket.ticket ?? ticket.source])).digest('hex');
 }
 
 /** @param {Ticket} ticket */
@@ -280,6 +305,8 @@ export function toPayload(ticket) {
   /** @type {Record<string, unknown>} */
   const body = { prompt: ticket.prompt };
   if (ticket.ticket) body.ticket = ticket.ticket;
+  if (ticket.projectId) body.projectId = ticket.projectId;
+  if (ticket.handoff === true) body.handoff = true;
   if (ticket.label) body.label = ticket.label;
   if (ticket.adapter) body.adapter = ticket.adapter;
   if (ticket.mode) body.mode = ticket.mode;
@@ -416,12 +443,36 @@ export async function runDispatch(opts) {
   }
 
   for (let pass = 1; pass <= passes; pass += 1) {
-    const { completed, dispatched } = readSwarmTicketState();
-    const localDispatched = new Set(dispatched);
+    let state;
+    try { state=await readBoardTicketState(baseUrl); }
+    catch (err) { console.error(`[fail] roster: ${err.message}`); return 1; }
+    const projectStates=new Map();
+    function stateFor(ticket) {
+      const project=ticket.projectId ?? null;
+      if (!projectStates.has(project)) projectStates.set(project,ticketState(state.roster.filter(t=>(t.projectId ?? null) === project)));
+      return projectStates.get(project);
+    }
+    // Fetch detail only for gates which need a self-report absent from the roster.
+    try {
+      for (const ticket of tickets) {
+        const {records}=stateFor(ticket);
+        for (const blocker of normalizeBlockers(ticket.blockedBy)) {
+          if (typeof blocker === 'string' || blocker.condition !== 'self-report-success') continue;
+          const task=records.get(blocker.ticket);
+          if (task && task.status === 'COMPLETED' && task.handoff === undefined) {
+            const detail=await getBoardJson(baseUrl, `/api/tasks/${encodeURIComponent(task.taskId)}`);
+            if (detail?.taskId !== task.taskId) throw new Error('Invalid board task detail');
+            records.set(blocker.ticket,{...task,handoff:detail.handoff ?? null});
+          }
+        }
+      }
+    } catch (err) { console.error(`[fail] dependency details: ${err.message}`); return 1; }
+
 
     /** @type {Ticket[]} */
     const eligible = [];
     for (const ticket of tickets) {
+      const {completed,dispatched:localDispatched,records}=stateFor(ticket);
       const id = ticket.ticket;
       const ready = isReadyTask(ticket);
       if (!ready.ok) {
@@ -434,7 +485,7 @@ export async function runDispatch(opts) {
         console.log(`[skip] ${ticket.source} (${id}): already-dispatched`);
         continue;
       }
-      const gate = isEligible(ticket, completed, localDispatched);
+      const gate = isEligible(ticket, completed, localDispatched, records);
       if (!gate.ok) {
         skipped += 1;
         console.log(`[skip] ${ticket.source}${id ? ` (${id})` : ''}: ${gate.reason}`);
@@ -461,7 +512,14 @@ export async function runDispatch(opts) {
     }
 
     for (const ticket of batch) {
+      const {dispatched:localDispatched,records}=stateFor(ticket);
       const payload = toPayload(ticket);
+      payload.request_key=ticketRequestKey(ticketsDir,ticket);
+      const dependencies=normalizeBlockers(ticket.blockedBy);
+      if (dependencies.length) {
+        console.log(`[gate] ${ticket.source}: mechanical completion is not content success; self-report-success is an agent claim, not verification`);
+        if (!['bash','shell'].includes(ticket.adapter)) payload.dependsOn=dependencies.map(b=>records.get(typeof b === 'string'?b:b.ticket).taskId);
+      }
       if (dryRun) {
         console.log(`[dry-run] would POST ${ticket.source}:`, JSON.stringify(payload));
         posted += 1;
@@ -471,12 +529,13 @@ export async function runDispatch(opts) {
       }
       try {
         const { status, json } = await postDispatch(payload);
-        if (status === 201) {
+        if (status === 201 || status === 200) {
           console.log(`[ok] ${ticket.source} → taskId=${json.taskId} status=${json.status}`);
           posted += 1;
           if (ticket.ticket) localDispatched.add(ticket.ticket);
         } else {
           console.error(`[fail] ${ticket.source} HTTP ${status}:`, json);
+          if (status === 409) console.error('Same ticket request_key has different content. Review the original task; use a new explicit ticket identity for a new attempt.');
           failed += 1;
         }
       } catch (err) {

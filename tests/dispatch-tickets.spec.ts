@@ -188,3 +188,41 @@ why?
     assert.match(String(gate.reason), /not-task/);
   });
 });
+
+// Exercise the actual remote board contract, independent of local .swarm-runs.
+import { createServer } from 'node:http';
+import { runDispatch, isEligible } from '../scripts/dispatch-tickets.mjs';
+async function board(handler: (req: any, res: any) => void, use: (url:string)=>Promise<void>) {
+ const server=createServer(handler); await new Promise<void>(done=>server.listen(0,'127.0.0.1',done));
+ const address=server.address() as {port:number}; try { await use(`http://127.0.0.1:${address.port}`); } finally { await new Promise<void>(done=>server.close(()=>done())); }
+}
+it('remote roster prevents dispatch and resolves dependencies with stable request keys',async()=>{
+ const dir=scratch(); writeFileSync(join(dir,'next.json'),JSON.stringify({ticket:'next',type:'task',status:'ready-for-agent',prompt:'continue',adapter:'codex',projectId:'p',blockedBy:[{ticket:'prior',condition:'self-report-success'}]}));
+ const payloads:any[]=[]; const paths:string[]=[];
+ await board((req,res)=>{ paths.push(req.url); res.setHeader('content-type','application/json');
+  if(req.method==='GET') { res.end(JSON.stringify([{taskId:'upstream',ticket:'prior',projectId:'p',status:'COMPLETED',handoff:{state:'reported',selfReport:{schemaVersion:1,status:'success',summary:'done'}}}])); return; }
+  let raw=''; req.on('data',(c:any)=>raw+=c); req.on('end',()=>{payloads.push(JSON.parse(raw));res.statusCode=201;res.end(JSON.stringify({taskId:'new',status:'RUNNING'}));});
+ },async url=>{ assert.equal(await runDispatch({ticketsDir:dir,baseUrl:url}),0); assert.equal(await runDispatch({ticketsDir:dir,baseUrl:url}),0); });
+ assert.deepEqual(payloads[0].dependsOn,['upstream']); assert.equal(payloads[0].request_key,payloads[1].request_key); assert.match(payloads[0].request_key,/^ticket-/); assert.ok(paths.includes('/api/tasks?includeArchived=1'));
+});
+it('remote already-dispatched tickets are skipped and roster errors fail closed',async()=>{
+ const dir=scratch();writeFileSync(join(dir,'a.json'),JSON.stringify({ticket:'a',type:'task',status:'ready-for-agent',prompt:'x'}));let posts=0;
+ await board((req,res)=>{ if(req.method==='POST')posts++; res.setHeader('content-type','application/json');res.end(JSON.stringify([{taskId:'existing',ticket:'a',status:'RUNNING'}])); },async url=>assert.equal(await runDispatch({ticketsDir:dir,baseUrl:url}),0));assert.equal(posts,0);
+ await board((_req,res)=>{res.statusCode=503;res.end('unavailable');},async url=>assert.equal(await runDispatch({ticketsDir:dir,baseUrl:url}),1));
+});
+it('self-report gate does not accept mechanical completion alone and validates gate schema',()=>{
+ const completed=new Set(['a']);const dispatched=new Set<string>();
+ assert.equal(isEligible({blockedBy:[{ticket:'a',condition:'self-report-success'}]},completed,dispatched,new Map([['a',{status:'COMPLETED'}]])).ok,false);
+ assert.throws(()=>isEligible({blockedBy:[{ticket:'a',condition:'eval something'}]},completed,dispatched),/condition/);
+});
+for (const adapter of ['bash','shell']) it(`${adapter} dependencies gate dispatch without changing the literal command or injecting context`,async()=>{
+ const dir=scratch();writeFileSync(join(dir,'b.json'),JSON.stringify({ticket:'b',type:'task',status:'ready-for-agent',prompt:'printf "{{x}}"',adapter,blockedBy:['a']}));let payload:any;
+ await board((req,res)=>{res.setHeader('content-type','application/json');if(req.method==='GET'){res.end(JSON.stringify([{taskId:'up',ticket:'a',status:'COMPLETED'}]));return;}let raw='';req.on('data',(c:any)=>raw+=c);req.on('end',()=>{payload=JSON.parse(raw);res.statusCode=201;res.end('{}');});},async url=>assert.equal(await runDispatch({ticketsDir:dir,baseUrl:url}),0));
+ assert.equal(payload.prompt,'printf "{{x}}"');assert.equal(payload.dependsOn,undefined);
+});
+it('same ticket in another project cannot satisfy dependency or suppress this project dispatch',async()=>{
+ const dir=scratch();writeFileSync(join(dir,'a.json'),JSON.stringify({ticket:'a',type:'task',status:'ready-for-agent',prompt:'x',projectId:'p',adapter:'codex'}));
+ writeFileSync(join(dir,'b.json'),JSON.stringify({ticket:'b',type:'task',status:'ready-for-agent',prompt:'x',projectId:'p',blockedBy:['foreign']}));const seen:any[]=[];
+ await board((req,res)=>{res.setHeader('content-type','application/json');if(req.method==='GET'){res.end(JSON.stringify([{taskId:'old',ticket:'a',projectId:'q',status:'COMPLETED'},{taskId:'wrong',ticket:'foreign',projectId:'q',status:'COMPLETED'}]));return;}let raw='';req.on('data',(c:any)=>raw+=c);req.on('end',()=>{seen.push(JSON.parse(raw));res.statusCode=201;res.end('{"taskId":"new","status":"RUNNING"}');});},async url=>assert.equal(await runDispatch({ticketsDir:dir,baseUrl:url}),0));
+ assert.deepEqual(seen.map(p=>p.ticket),['a']);
+});
