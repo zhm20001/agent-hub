@@ -1,64 +1,60 @@
 ---
-description: "Agent Hub — dispatch coding agents across adapters; observe and intervene via the swarm board."
+description: "Agent Hub — dispatch local agents, observe execution, and keep lightweight project handovers."
 kind: "package-bundle"
 ---
 
 # Agent Hub
 
-**Product:** Agent Hub (`agent-hub`). Live path = swarm board (`npm run start` / `npm run restart`, board at `:3000`). Follow **[DEMO.md](./DEMO.md)** and **[DISPATCH.md](./DISPATCH.md)**.
-
 English | [中文](README.zh.md)
 
-## Summary
+Agent Hub helps a lead agent delegate work to ZCode, Codex or Bash, and helps you pick up a project after time away. It provides detached execution, a local task board, project goals and append-only handover notes.
 
-Agent Hub sits between any two coding agents: it routes dispatch, keeps progress on disk, and shows a board so humans can observe and intervene. It does **not** run the coding work itself — adapters spawn local CLI agents (ZCode, bash, …) as detached processes under `.swarm-runs/<taskId>/`.
-
-- **Board:** Kanban + Inspector at `http://127.0.0.1:3000` (Express + Vite).
-- **Dispatch:** QuickDispatch / modal on the board, `POST /api/tasks/dispatch`, `swarm_dispatch` tools, or `npm run dispatch-tickets`.
-- **Guards:** cwd allowlist (`AGENT_HUB_TASK_ROOTS`), concurrency cap (`AGENT_HUB_MAX_CONCURRENT`), TTL watchdog (`AGENT_HUB_DEFAULT_TIMEOUT`).
-- **ADR-0002:** the platform records mechanical facts only (`COMPLETED` / exit 0 ≠ semantic success). Humans and upstream agents read the transcript.
+**Process completion and agent claims are not proof that the work meets your requirements.** Hub records execution facts and attributed reports; you or the lead agent decide what to accept and do next.
 
 ## Quick start
 
-```bash
-cd <repo-root>
-export ZCODE_CLI_PATH=/path/to/zcode.cjs   # required for the zcode adapter
-npm run start                              # board → http://127.0.0.1:3000
-```
-
-Optional env: `AGENT_HUB_TASK_ROOTS`, `AGENT_HUB_MAX_CONCURRENT`, `AGENT_HUB_DEFAULT_TIMEOUT`, `PORT`.
-
-After changing server / runner / adapter code:
+Requires **Node.js 22.13+**.
 
 ```bash
-npm run restart   # kill :$PORT listener, then start again
+npm install
+export ZCODE_CLI_PATH=/path/to/zcode.cjs  # when using ZCode
+npm run start                           # http://127.0.0.1:3000
 ```
 
-Batch tickets (no LLM): see [DISPATCH.md](./DISPATCH.md) and `scripts/dispatch-tickets.mjs`.
+The server binds to localhost by default. Optional environment variables include `AGENT_HUB_TASK_ROOTS`, `AGENT_HUB_MAX_CONCURRENT`, `AGENT_HUB_DEFAULT_TIMEOUT` and `PORT`. See [DEMO.md](DEMO.md) for setup and [DISPATCH.md](DISPATCH.md) for dispatch details.
 
-## Docs
+## What it does
 
-| Doc | Audience |
+- Dispatch through the board, HTTP, registered `swarm_*` tools or ticket files. Local CLI processes continue when the parent board closes.
+- Inspect task state, output, conversations, reports and version changes; cancel or let the watchdog enforce the time budget.
+- Register a project goal and default directory. Leave sourced handover notes, review changes since your last acknowledged visit, then open related tasks.
+- Use a stable `request_key` to recover the original dispatch after an uncertain response. Changed input with the same key conflicts.
+- Request a structured agent handoff and pass bounded upstream context to text agents. Bash commands remain literal commands.
+
+Project notes remain separate from goals and execution facts. There is no automatic project planning, semantic acceptance or progress percentage. Completion callbacks require an explicit host connection; persistent replay additionally requires a stable `consumerId`.
+
+## Embedding
+
+`createHub({ runsDir })` assembles one store, task engine, query view and project notebook. Pass that Hub to `startServer(port, { hub })` and `registerSwarmTools(context, activeAgentGetter, hub)` so every entry uses the same instance. Use distinct directories for independent instances; close an externally supplied Hub when its owner is finished.
+
+SQLite at `.swarm-runs/hub.sqlite` owns registered task state, request identities, events and progress. Task directories retain readable metadata copies, logs, reports and process evidence. Existing JSON task records are imported when read. Editing or deleting a metadata copy does not edit or delete a registered database task. Preserve the entire run directory when backing up.
+
+## Development
+
+| Command | Purpose |
 | --- | --- |
-| [DEMO.md](./DEMO.md) | Human runbook — start board, guards, smoke |
-| [DISPATCH.md](./DISPATCH.md) | Ticket → HTTP dispatch contract |
-| [PRODUCT.md](./PRODUCT.md) | Product purpose and constraints |
-| [CONTEXT.md](./CONTEXT.md) | Glossary (Platform / Agent / Adapter / Task / …) |
-| [docs/README.md](./docs/README.md) | Doc hub — USER_GUIDE / AGENT_GUIDE / ARCHITECTURE |
-| [DESIGN.md](./DESIGN.md) | Operate board visual system |
+| `npm run start` / `npm run dev` | Start the board |
+| `npm run restart` | Restart after backend changes |
+| `npm test` | Discover all specs and run each in an isolated temporary working directory |
+| `npm run build` | Compile backend to `lib` and frontend to `dist` |
+| `npm run dispatch-tickets -- <dir> --dry-run` | Preview against the selected board without posting tasks |
 
-## Scripts
+Vite refreshes frontend changes; backend changes require a restart. Agents use their own local credential configuration; do not put credentials in prompts or tickets.
 
-| Script | Purpose |
-| --- | --- |
-| `npm run start` / `npm run dev` | Board server (default `:3000`) |
-| `npm run restart` | Restart board after API changes |
-| `npm test` | Spec suite |
-| `npm run build` | Vite production build |
-| `npm run dispatch-tickets` | Batch-dispatch ticket files |
+## Documentation
 
-## Principles
-
-- Platform does **not** judge success (ADR-0002).
-- Credentials stay with the agent (ZCode uses `~/.zcode`); Hub never holds them.
-- State source of truth: `.swarm-runs/*/meta.json` (+ `raw.log`, `report.md`, `resolution.json`).
+- [Architecture and execution sequence](docs/ARCHITECTURE.md)
+- [HTTP, tools, handoffs and ticket dispatch](DISPATCH.md)
+- [Startup and operating guide](DEMO.md)
+- [Product purpose](PRODUCT.md), [vocabulary](CONTEXT.md), [documentation index](docs/README.md)
+- [Why the platform does not judge success](docs/adr/0002-platform-does-not-judge.md)

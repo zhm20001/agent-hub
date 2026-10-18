@@ -1,222 +1,173 @@
-# Agent Hub 全景：模块、seam 与任务时序
+# Agent Hub：任务执行与工作接续
 
-核对日期：2026-10-16。依据 `src/` 当前执行路径编写；文档中的图描述已实现行为。旧版概念设计见 [agent-hub 文档](./agent-hub/README.md)，其中尚未实现的能力不属于本图。
+核对日期：2026-10-18。本文描述当前代码；历史设计见 [agent-hub 文档](./agent-hub/README.md)，其中的规划不代表已经实现。
 
-Agent Hub 负责把任务交给 Agent、保管机械事实、提供看板和干预入口。**编码工作由独立的 Agent 进程执行；平台不判断代码是否满足需求。** `COMPLETED` 表示进程结束的机械状态，任务内容是否成功仍由人或上游 Agent 判断。
+Agent Hub 把任务交给本地 Agent，记录执行事实，让人和主 Agent 在离开后能够接着工作。编码由 ZCode、Codex 或 Bash 子进程执行。**进程结束、Agent 自述成功、需求验收通过，是三件事。平台记录前两件，不替人或上游 Agent 作最后判断。**
 
-## 1. 先理解三种关系
+## 一套实例，共用一本登记簿
 
-- **模块**：把一件事情集中做好的一组代码。例如任务查询负责“把这个任务的资料整理给我”。一个模块可以跨多个文件，不能用文件数量判断模块数量。
-- **Interface（使用约定）**：调用方需要知道的操作、参数、返回内容、失败情况和顺序。例如 `terminateTask(id, cause)` 会完成终止与收尾，调用方不用再自己写报告。
-- **Seam（替换位置）**：可以换掉具体做法的位置。例如换 ZCode 为 Codex，平台仍通过 `WorkerAdapter` 使用它。**每条调用箭头都有使用约定，但不是每条箭头都有必要设计成可插拔的 seam。**
+`createHub({ runsDir, getAdapter, env, now })` 是集中组装的位置。它创建或接收同一个 `TaskStore`，再把它交给任务执行、查询和项目接续模块。HTTP、工具、超时巡查、通知也使用这套实例。测试或嵌入者可以传入不同运行目录，让两套 Hub 互不混用资料。
 
-可以把平台看成一个任务办事处：入口接待，任务模块负责派发与收尾，文件存储保管登记簿，adapter 知道如何与不同 Agent 沟通，查询模块把资料整理给看板。
-
-## 2. 模块全景
-
-箭头表示请求、调用或资料传递；虚线表示周期检查、文件观察或外部文件读取。图中把 `TaskStore`、收尾文件读写及底层文件工具合并成“任务文件”，不表示所有读写都经过一个类。
+默认实例使用启动工作目录下的 `.swarm-runs`。导入模块、创建 Hub 不会立即创建目录、打开数据库或启动监听；实际读写或启动服务时才获取资源。前端文件从安装位置寻找，不要求调用方把工作目录切到 Agent Hub 源码目录。
 
 ```mermaid
 flowchart TB
-    Board["看板：列表、详情、对话<br/>useTaskData / createTaskPoller"]
-    HTTP["HTTP 入口<br/>server.ts"]
-    Tools["上游 Agent 的工具入口<br/>tools.ts"]
-    Life["任务执行与收尾<br/>detached.ts / settlement.ts"]
-    Query["任务查询<br/>task-queries.ts"]
-    Adapter["Agent 替换位置<br/>WorkerAdapter：ZCode / Codex / Bash"]
-    Launch["独立启动进程<br/>process-launcher.ts"]
-    Agent["实际 Agent 进程<br/>执行编码或 shell 任务"]
-    Transcript["原文定位、解析和展示<br/>transcript / transcript-document / harvest"]
-    Files[("任务文件<br/>.swarm-runs / TaskStore / file-storage")]
-    Guard["恢复与超时检查<br/>reconcile.ts / ttl.ts"]
-    Notice["收尾发布监听<br/>watcher.ts → 订阅者回调"]
-
-    Board -->|HTTP 请求| HTTP
-    HTTP -->|派发、取消| Life
-    Tools -->|派发、取消| Life
-    HTTP -->|列表、详情、对话| Query
-    Tools -->|状态、名册| Query
-    Life -->|命令、起跑条件、输出翻译| Adapter
-    Life -->|登记后启动| Launch
-    Launch -->|记好身份后启动并等待| Agent
-    Agent -->|标准输出与错误| Files
-    Launch -->|身份与实际退出事实| Files
-    Life -->|状态、收尾记录、报告、发布标记| Files
-    Life -->|收尾时寻找原文| Transcript
-    Query -->|读取与必要补全| Files
-    Query -->|定位原文并生成展示| Transcript
-    Transcript -->|使用所属 Agent 的格式和存储规则| Adapter
-    Guard -.->|读取文件与进程状态| Files
-    Guard -->|恢复收尾或超时终止| Life
-    Query -->|查询前恢复必要状态| Guard
-    Files -.->|completion.json 已发布| Notice
+    Human["人：看项目接续、查看和派发任务"] --> HTTP["HTTP 与看板"]
+    Lead["主 Agent：读接续、派发、查看、写记录"] --> Tools["swarm 工具"]
+    Assembly["createHub：统一组装同一套依赖"] --> Engine["任务执行与收尾"]
+    Assembly --> Queries["任务查询与必要恢复"]
+    Assembly --> Projects["项目目标与接续记录"]
+    Assembly --> Store["TaskStore"]
+    HTTP --> Engine
+    HTTP --> Queries
+    HTTP --> Projects
+    Tools --> Engine
+    Tools --> Queries
+    Tools --> Projects
+    Engine --> Adapter["WorkerAdapter：ZCode / Codex / Bash"]
+    Engine --> Launcher["独立启动进程"]
+    Launcher --> Agent["实际 CLI Agent"]
+    Engine --> Store
+    Queries --> Store
+    Projects --> Store
+    Store --> DB[("hub.sqlite：状态、请求、事件、进度")]
+    Engine --> Files[("每任务文件：日志、退出事实、报告、原文引用")]
+    Agent --> Files
+    Launcher --> Files
+    Queries --> Files
+    DB --> Notice["通知消费者：成功接收后登记进度"]
+    Files --> Notice
 ```
 
-这张图有三个重点：
+HTTP 和工具入口负责接收输入。任务执行模块隐藏派发、停止和收尾的顺序；查询模块整理事实并修复遗漏；项目模块保留目标与接续记录。数据库由具体的 `TaskStore` 保管，没有额外引入通用数据库插件框架。
 
-1. **执行与查询共用登记资料，但分工不同。** 执行模块决定何时启动、停止和收尾；查询模块负责把已知事实整理出来。查询会补齐遗漏的收尾资料，所以它不只是读文件。
-2. **Agent 的差异集中在 adapter。** 平台知道“要启动什么命令”和“输出代表哪些事实”，不需要在看板代码里识别 ZCode 或 Codex 格式。
-3. **文件是跨进程的交接材料。** 平台进程关闭后，启动进程与 Agent 还能继续运行；重启后的平台通过文件找回身份和退出事实。
+## 可替换的位置与集中负责的事情
 
-图中省略的旁路：实时日志由 HTTP 直接按文件偏移读取并通过 SSE 发送；版本记录由 HTTP 在任务目录调用 jj，必要时回退到 git；在文件管理器中定位原文也是 HTTP 的本机操作。这些尚未归入 `task-queries.ts` 的任务资料拼装流程。
+seam 可以理解为“换一种做法，调用方仍按原约定使用”的位置。当前最明确的是 `WorkerAdapter`：三种 CLI 的命令、起跑条件、输出翻译、原文定位与解析各有不同。
 
-## 3. seam 在哪里，替换后谁不必跟着改
-
-| 位置 | 调用方只需要知道什么 | 集中隐藏了什么 | 当前性质 |
-| --- | --- | --- | --- |
-| `WorkerAdapter` | `buildCommand`，以及可选的检查、翻译、原文定位与解析能力 | CLI 参数、启动配置、各 Agent 的输出和原文格式 | 真实 seam：已有 ZCode、Codex、Bash 三种 adapter |
-| `TranscriptDocument` | 消息列表与模型信息 | 原始 JSON / JSONL 的格式差异 | adapter 到展示代码之间的数据交接约定 |
-| `TaskStore(runsDir)` 与文件工具 | 创建、读取、合并更新、列举和读取日志尾部 | 目录、编号校验、并发更新、原子替换 | 具体文件实现；目录可换，尚无第二种数据库 adapter |
-| `spawnDetachedTask / terminateTask / completeTask` | 派发、取消或提供结束事实 | 进程组、首次终态保留、收尾与报告顺序 | 任务模块的使用入口；不是额外的通用执行插件框架 |
-| `getTaskDetail / getTaskConversation / listTasks` | 任务编号和查询选项 | 恢复、补字段、找原文、拼资料 | 查询模块的使用入口；HTTP 与工具共用 |
-| `SwarmRunsWatcher.subscribe`、`onCompletion` | 接收任务与报告的回调 | 文件监听和当前运行期间的去重 | 可替换通知接收方；不承担持久化投递 |
-| `startServer → close` | 启动并获得关闭能力 | HTTP、Vite、watcher、watchdog 的资源释放 | 整个平台运行资源的统一拥有者 |
-
-**深度来自“调用方少操心”。** 例如取消任务只调用一次 `terminateTask`，不需要先杀进程、再改状态、再翻译输出、再写报告。内部仍可以分成几个小文件，但调用方不需要了解这些步骤。
-
-`TranscriptRef` 与 `SessionRef` 回答两个不同问题：前者是“原文在哪里”，后者是“下次如何继续”。即便某个 Agent 恰好给出同一个值，平台也不应把两者混为一谈。
-
-## 4. 一次任务：从派发到可通知
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant C as 看板或工具调用方
-    participant L as 任务执行与收尾
-    participant A as 所属 adapter
-    participant F as 任务文件
-    participant P as 独立启动进程
-    participant G as 实际 Agent
-    participant W as 发布监听与订阅者
-
-    C->>L: spawnDetachedTask
-    Note over L,F: 同一个派发锁内检查目录与名额，独占预留任务目录
-    L->>A: 检查起跑条件，构造命令
-    L->>F: 写 RUNNING、launchOwnerPid 与日志头
-    L->>P: 启动独立进程，日志直接写文件
-    L->>F: 尽快补写 pid
-    L-->>C: 返回任务编号，不等待 Agent 完成
-    P->>F: 独占登记 process.pid
-    P->>G: 登记成功后启动 Agent
-    G->>F: 输出与错误写 raw.log
-    G-->>P: 结束，带退出码或信号
-    P->>F: 写 process-exit.json
-    P-->>L: 平台仍运行时触发 close
-    L->>F: 先登记终态和结束时间
-    L->>A: 把原始输出翻译为中立事实
-    L->>F: 写 resolution.json，补已知原文和模型信息
-    L->>F: 写 report.md
-    L->>F: 最后发布 completion.json
-    F-->>W: 观察到发布文件
-    W->>F: 读取任务与完整报告
-    W-->>W: 当前 watcher 期间每任务通知一次
-```
-
-上图是正常路径；父进程补写 `meta.pid` 与启动进程登记 `process.pid` 的先后可能交错。真正必须成立的顺序只有：
-
-- **先占名额，再启动进程。** 写任务登记失败时，不能先把 Agent 放出去。
-- **启动进程先登记身份，再启动 Agent。** 父进程意外退出后，仍有办法找到活进程。
-- **先记录停止事实，再补收尾产物，最后发布通知标记。** 中途出错可恢复；收到通知的人不必猜报告是否写完。
-
-起跑条件不满足时，平台记录 `FAILED` 和未满足条件，完成收尾；不会启动 Agent。平台关闭时，上图的 `close` 回调可能缺席，后面的收尾由恢复路径补做。
-
-## 5. 看板读取资料：先整理，再展示
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant B as 看板读取模块
-    participant H as HTTP 或工具入口
-    participant Q as task-queries
-    participant R as 任务恢复
-    participant F as 任务文件
-    participant T as 原文定位与解析
-    participant A as 所属 adapter
-
-    B->>H: 请求任务详情或对话
-    H->>Q: getTaskDetail 或 getTaskConversation
-    Q->>R: 检查任务是否遗漏收尾
-    R->>F: 需要时补 PID、终态与产物
-    Q->>F: 读取最新任务与收尾记录
-    Q->>T: 定位原文，按文件版本读取
-    T->>A: 缺少路径时定位；文件变化时解析
-    A-->>T: 路径或统一的 TranscriptDocument
-    T-->>Q: 消息与模型信息，或明确缺失
-    Q->>F: 只补缺失的模型、provider、续跑信息
-    Q-->>H: 详情、对话或原文位置
-    H-->>B: 返回整理后的资料
-    Note over B: 等本次请求结束，再安排下一次轮询；切换任务取消旧请求
-```
-
-详情中的最后回复与对话页都从同一份消息列表产生。没有可读原文时，详情仍可使用收尾记录的 `finalText`；对话页明确说明缺少原文，不把一段最终回复伪造成完整对话。
-
-原文缓存按所属 Agent、路径、文件身份、大小及修改时间区分；文件改变后重新读取。最多缓存 32 个文件，单个文件超过 8MiB 时不保留缓存。详情日志读取最多末尾 20KB，再返回最后 5000 字符，避免每次刷新搬运整份日志。
-
-ZCode、Codex 都有格式解析，但当前只有 ZCode 提供本地原文定位。**能解析一种格式不等于已经能自动找到这种 Agent 的原文。** Bash 没有结构化原文能力时，平台保留其输出作为最终文字。
-
-## 6. 平台关闭、取消和异常恢复
-
-```mermaid
-flowchart TD
-    Inspect["看板查询或每 10 秒巡检"] --> Running{"任务仍是 RUNNING？"}
-    Running -->|否| Artifacts{"缺少收尾发布？"}
-    Artifacts -->|是| Repair["补收尾记录和报告，再发布 completion.json"]
-    Artifacts -->|否| Done["保留已有事实"]
-    Running -->|是| Identity["读取 meta.pid，必要时读取 process.pid"]
-    Identity --> Alive{"进程还活着？"}
-    Alive -->|是| Wait["保持运行；TTL 另行判断是否延长或终止"]
-    Alive -->|否| Preparing{"尚无 PID，但派发进程还在准备？"}
-    Preparing -->|是| Wait
-    Preparing -->|否| Claim["必要时独占登记 0，阻止迟到启动"]
-    Claim --> Race{"启动进程是否已先登记且仍存活？"}
-    Race -->|是| Wait
-    Race -->|否| Exit["读取实际退出事实；没有时保留未知"]
-    Exit --> Repair
-```
-
-- **平台正常关闭**：停止 watchdog、取消订阅、关闭 watcher、Vite 与 HTTP，断开 SSE。已经独立启动的任务继续运行。
-- **用户取消或 TTL 终止**：通过同一个 `terminateTask` 入口处理。POSIX 优先结束整个进程组，Windows 使用进程树终止；首次记录的终态保留，晚到退出事实仍可补充。
-- **父进程在保存 PID 前退出**：启动进程已登记身份时，从 `process.pid` 补回；尚未登记时，恢复与启动通过独占创建竞争登记位置。恢复先记下 `0`，迟到的启动就不会执行 Agent。
-- **进程已结束，但收尾缺席**：有 `process-exit.json` 时用实际退出事实；没有时只知道“进程不在”，不能编造退出码或内容成功的判断。
-
-`RUNNING` 包含“名额已占、正在准备启动”的短暂阶段，不保证此刻已经有 Agent 工作。运行状态只有 `RUNNING / COMPLETED / FAILED / KILLED / TIMEOUT_KILLED`；图中的准备、登记、发布步骤没有新增任务状态。
-
-## 7. 文件之间如何交接
-
-| 文件 | 谁写 | 回答什么问题 |
+| 模块或约定 | 调用方交代什么 | 内部负责什么 |
 | --- | --- | --- |
-| `meta.json` | 文件存储，由任务执行、恢复或查询更新 | 任务是谁、在哪里、当前机械状态、已知 PID 和时间 |
-| `process.pid` | 启动进程；必要时由恢复或取消独占写 `0` | 谁持有启动身份，是否已经阻止迟到启动 |
-| `raw.log` | 平台写日志头，Agent 直接写输出与错误，watchdog 可补操作说明 | 进程输出了什么 |
-| `process-exit.json` | 独立启动进程 | Agent 实际怎样退出，包括启动错误 |
-| `resolution.json` | 收尾逻辑；原文定位可补已知引用 | 为何停止、最终文字、续跑与原文引用、观察事实 |
-| `report.md` | 收尾逻辑 | 供人阅读的任务摘要 |
-| `completion.json` | 收尾逻辑在报告准备好后发布 | 已有可供通知读取的产物 |
+| `createHub` | 运行目录、可选 adapter 和环境 | 把同一套依赖交给各模块 |
+| `WorkerAdapter` | 任务文本、工作目录、执行选项 | 不同 CLI 的命令、条件和输出格式 |
+| `hub.engine` | 派发、停止或提供退出事实 | 占名额、进程身份、首次终态保留、收尾 |
+| `hub.queries` | 任务编号及查询选项 | 恢复、原文、模型信息、详情和对话 |
+| `hub.projects` | 项目目标、接续说明和已读位置 | 历史保留、来源检查、变化游标 |
+| `TaskStore` | 读取或更新任务、登记请求和事件 | SQLite 状态、兼容文件和并发保护 |
+| `onCompletion` | 接收任务及完整报告的回调 | 宿主自行连接真正的通知接收方 |
+| `startServer → close` | 监听配置及可选 Hub | HTTP、Vite、巡查、通知和连接释放 |
 
-这些文件不构成一次同时提交的事务。可靠性依靠明确顺序、单文件原子替换、跨进程互斥，以及中断后的恢复。`completion.json` 也不是任务内容成功的证明。
+不同 Agent 的原文先转成统一消息记录，再派生最后回复、对话展示和模型信息。解析缓存随文件身份、大小和修改时间失效。ZCode 能发现本地原文；Codex 有格式解析能力，不代表已经具备相同的自动定位能力。
 
-通知的去重限于当前 watcher 生命周期；启动前已有的终态任务作为历史基线。它不是保证重启补发的消息队列。平台提供 `onCompletion` 回调；当前 DSH 入口的 `currentAgent` 尚无赋值入口，因此不能把“自动回注到活跃 Agent”描述成已接通的保证。
+## 状态在数据库，过程资料在文件
 
-## 8. 按职责找到代码
+`.swarm-runs/hub.sqlite` 保存任务登记、派发请求身份、任务事件、通知消费者进度、项目、接续记录及项目已读位置。SQLite 使用 WAL 与等待锁的超时设置。相关数据库写入可以一起提交。
 
-| 想看什么 | 代码 |
+已有任务目录中的合法 `meta.json` 会在查询时导入；一旦任务已登记进数据库，以数据库状态为准。`meta.json` 继续作为可读兼容副本，**直接编辑它不再是更新已登记任务的方法**。删除单个任务目录也不等于删除数据库中的任务。
+
+| 每任务文件 | 用途 |
 | --- | --- |
-| 看板如何刷新与隔离过期请求 | [task-data.ts](../src/web/lib/task-data.ts)、[use-task-data.ts](../src/web/hooks/use-task-data.ts) |
-| 平台运行资源如何启动与关闭 | [server.ts](../src/server.ts)、[cli.ts](../src/cli.ts)、[index.ts](../src/index.ts) |
-| 工具如何转给执行与查询 | [tools.ts](../src/tools.ts) |
-| 任务如何派发、终止和收尾 | [detached.ts](../src/runner/detached.ts)、[settlement.ts](../src/runner/settlement.ts) |
-| 任务资料如何整理 | [task-queries.ts](../src/runner/task-queries.ts) |
-| Agent 差异如何替换 | [base.ts](../src/adapters/base.ts)、[registry.ts](../src/adapters/registry.ts) |
-| 如何保证先记身份再启动 | [process-launcher.ts](../src/runner/process-launcher.ts) |
-| 如何保管文件、处理并发 | [task-store.ts](../src/runner/task-store.ts)、[file-storage.ts](../src/runner/file-storage.ts) |
-| 如何定位和解读原文 | [transcript.ts](../src/runner/transcript.ts)、[transcript-document.ts](../src/runner/transcript-document.ts)、[transcript-format.ts](../src/adapters/transcript-format.ts) |
-| 如何由事实生成展示 | [harvest.ts](../src/runner/harvest.ts)、[shared/transcript.ts](../src/shared/transcript.ts) |
-| 如何恢复和处理超时 | [reconcile.ts](../src/runner/reconcile.ts)、[ttl.ts](../src/runner/ttl.ts)、[timeout-policy.ts](../src/runner/timeout-policy.ts) |
-| 如何在发布后通知 | [watcher.ts](../src/watcher.ts) |
-| 人工命令读取 Agent 原文的另一条路径 | [read-transcript.ts](../src/runner/read-transcript.ts)、[readback.ts](../src/runner/readback.ts)；当前是 ZCode 专用，保留实际用途 |
+| `meta.json` | 任务登记的可读兼容副本 |
+| `process.pid` | 启动身份；必要时写 `0` 阻止迟到启动 |
+| `process-exit.json` | 独立启动进程保存的实际退出事实 |
+| `raw.log` | CLI 输出和错误 |
+| `resolution.json` | 停止原因、最终文字、原文和续跑引用 |
+| `report.md` | 供人阅读的机械收尾报告 |
+| `handoff.json` | Agent 交接自述的解析结果及来源 |
+| `completion.json` | 收尾资料已准备好，可以通知 |
 
-## 9. 本次清理
+**数据库、文件写入与启动操作系统进程不是一个事务。** 数据库不能撤回已经启动的进程，也不能替代身份文件。平台仍靠顺序、跨进程派发锁、原子文件写入和恢复协议，处理任意两步之间的中断。备份或迁移应保留整个运行目录，而非只拷贝 JSON。
 
-删除已无产品调用的旧包装：`transcript-compat.ts`、`summarizeTranscript`、`extractLastAssistantMessage`、`harvestTask`、`filterBoardTasks`、`formatModelLabel` 和未使用的 `DiffData` 类型别名。测试改为验证当前解析、投影、归档查询入口，原有场景保留。移除无用引用，并修正 adapter 注释与实际职责不一致的问题。
+## 派发、重试与收尾的顺序
 
-人工原文读取命令、历史元数据恢复和对外的 `/diff` 重定向仍有兼容用途。广义 `AdapterContractV1`、完整能力/权限声明、统一事件流和链式派发属于其他设计文档中的规划；本图不宣称它们已经落地。
+```mermaid
+sequenceDiagram
+    participant C as 调用方
+    participant H as Hub 任务模块
+    participant D as SQLite
+    participant P as 独立启动进程
+    participant A as CLI Agent
+    participant F as 任务文件
+    participant N as 通知接收方
+    C->>H: 派发，附稳定 request_key
+    H->>D: 查询 key 与输入指纹
+    alt 同 key、相同输入、已有任务
+        D-->>H: 原任务编号
+        H-->>C: 返回原任务，不重复启动
+    else 首次请求
+        H->>H: 校验目录、名额、项目与依赖上下文
+        H->>F: 独占预留任务目录
+        H->>D: 绑定请求身份，登记运行
+        H->>F: 写日志头和登记副本
+        H->>P: 启动独立进程
+        H-->>C: 返回任务编号
+        P->>F: 先独占登记身份
+        P->>A: 再启动 Agent
+        A->>F: 输出日志
+        A-->>P: 退出
+        P->>F: 写实际退出事实
+        H->>D: 保存首次终态
+        H->>F: 收尾记录、报告、交接记录
+        H->>F: 最后发布 completion.json
+        H->>D: 登记 completion 事件
+        D-->>N: 按消费者进度投递
+        N-->>D: 回调成功后推进进度
+    end
+```
+
+`request_key` 是调用方给同一次请求的稳定名字。网络中断后，使用相同 key 和相同输入重试，会找到原任务；同一个 key 换内容会冲突。故意再次执行应使用新 key。请求身份属于当前 Hub 的数据库，不跨不同运行目录共享。
+
+有一种中断需要明确处理：key 已预留，但尚无可读取的任务登记。平台返回需要恢复的冲突及原任务编号，**不会猜测“没启动”并自动再启动一次**。应检查和恢复原编号，再重读这个 key 的原任务；确认要另起一次工作时，由调用方明确发起新请求。
+
+任务结束后，平台仍可能需要恢复遗漏的报告和发布标记。父平台关闭时，已经独立启动的 CLI 继续运行；主动取消或超时才通过统一终止入口结束进程组。恢复时优先读取实际身份和退出文件；没有退出证据就保留未知，不编造退出码。
+
+## 给下一个 Agent 的交接
+
+`handoff: true` 为 ZCode 或 Codex 追加一个明确输出约定。Agent 在最终消息的 `## Agent Hub Handoff` 段落写 JSON，包括 `schemaVersion`、自报 `status`、`summary`，以及可选的 `verification`、`nextSteps`、`artifacts` 字符串数组。
+
+平台只机械检查格式，保存来源与原文指针。交接记录区分 `reported / missing / invalid / interrupted`。**`selfReport.status = success` 表示 Agent 这样说过，不表示平台验证过。** 缺少或无效交接不会被补写成成功。
+
+`dependsOn` 是已经结束的上游任务编号，要求与下游同属一个项目，或都未关联项目。它不是后台等待队列：仍在运行的上游会使本次请求被拒绝。平台把上游机械状态、交接自述或明确缺失说明放入新任务上下文。项目目标和最新接续记录也可加入；有总长度限制，截断会注明来源。
+
+Bash 的 prompt 就是脚本，不能加入自然语言。关联项目可用于归类和默认目录，但 Bash 不注入项目文字；要求 handoff 或依赖文字注入会被拒绝。续跑句柄是另一回事：`resumeSessionId` 用于启动新一次执行，不承诺能给正在运行的本地会话安全递话。
+
+## 项目是轻量笔记本
+
+项目保留稳定的目标和可选默认工作目录。接续说明是追加记录，可以由人或主 Agent 写；不会替换项目目标，也不会删除旧说明。来源任务必须存在且属于该项目。笔记可独立使用 `request_key`，重复提交取回原记录，换内容则冲突。
+
+建议说明回答三件事：已确认什么、什么仍待验证、下一步从哪里继续。Hub 不调用 LLM 自动生成摘要，不计算主观完成百分比，不自动批准成果或推进下一阶段。`parentTaskId` 记录同项目任务关系，没有自动递归规划器。
+
+项目总览展示目标、最新和历史接续、相关任务，以及上次确认以来的变化。读取不会自动标记已读；调用者明确提交读到的 `through` 序号，且不能跳过未来事件。任务变化通过稳定签名登记序号，重复读取不制造新变化。看板保留全部任务入口，未关联项目的旧任务仍然可查。
+
+## 通知与实时日志的恢复
+
+通知必须由宿主接入 `onCompletion`，或在插件配置中提供 `activeAgentGetter`。默认启动看板不代表能自动向当前聊天发送消息。
+
+- 未设置 `consumerId`：只观察本次启动后的新完成任务，历史终态作为基线。
+- 设置稳定 `consumerId`：读取 SQLite 事件，成功回调后才保存处理位置。重启可继续，失败会保留待投递状态并重试。
+- 这是 **至少一次** 投递：接收成功但还没登记进度就退出时，可能重发。接收方应按任务编号去重。多个独立通知目的地需要不同消费者身份，不应共享一个处理位置。
+
+文件监听负责及时唤醒，定时检查负责补漏。通知只在完整收尾产物可读后发送。
+
+实时日志用 SSE。浏览器断线后自动重连并携带 `Last-Event-ID`；服务端按文件身份和读取位置续传。日志缩短、替换或已检测到重写时，发送 reset，让浏览器清掉旧显示再继续。读取分块并保留跨块 UTF-8 字节；界面只保留最近约 1MiB 文本。它是实时查看通道，完整日志仍在文件中。
+
+## 开发与查代码
+
+| 目的 | 入口 |
+| --- | --- |
+| 统一组装 | `src/hub.ts` |
+| 项目和接续 | `src/projects.ts`、`src/web/components/ProjectOverview.tsx` |
+| 派发、停止与恢复 | `src/runner/detached.ts`、`process-launcher.ts`、`reconcile.ts` |
+| 存储与通知 | `src/runner/task-store.ts`、`src/watcher.ts` |
+| 交接与提示构建 | `src/runner/handoff.ts`、`src/prompts/` |
+| 查询与原文 | `src/runner/task-queries.ts`、`transcript-document.ts`、`src/adapters/` |
+| HTTP、工具与资源释放 | `src/server.ts`、`src/tools.ts`、`src/index.ts` |
+| 刷新与日志 | `src/web/hooks/use-task-data.ts`、`src/runner/log-stream.ts` |
+
+Node 要求 22.13 或更新版本。`npm test` 自动发现规格文件，为每个文件创建独立临时工作目录，防止测试登记进入真实运行目录。`npm run build` 编译服务端到 `lib` 并构建前端 `dist`。旧的未使用 `brand.ts` 已移除；广义 adapter 能力框架、自动审核、自动重试和云编排仍不属于当前实现。
+
+
+## 批量工单：先检查整批，再派发
+
+`dispatch-tickets.mjs` 先完整读取目录、检查输入类型，再读取指定看板的远端名册。第一次 POST 之前，必须确认同项目内工单身份不重复、没有自依赖、依赖可在本地工单或同项目远端名册中找到、依赖没有形成循环。任何一项错误都整批退出，不会出现前面的工单已启动、后面的工单才被发现非法的情况；循环错误会带出 `A -> B -> A` 这样的路径。
+
+已知但尚未结束的依赖仍然只是阻挡派发。`pending`、`in_progress` 等状态仍是合法文字，不会被改写成新的状态枚举。校验不负责自动推进任务，也不会把 Agent 自报成功升级为平台验收。派发身份由目录、项目和工单身份共同生成；同项目的依赖才会映射成具体上游任务编号。Bash 只在脚本端经过门控，命令正文仍不追加自然语言。

@@ -18,17 +18,63 @@ Live endpoint: `POST /api/tasks/dispatch` on the board (`npm run start` → `:30
 | `mode` | no | `edit` (default), `build`, `plan`, `yolo`. |
 | `cwd` | no | Absolute path; **must** be under `AGENT_HUB_TASK_ROOTS` (or default allowlist). HTTP **400** if outside. |
 | `timeout` | no | Seconds before watchdog kill (default `7200` / `AGENT_HUB_DEFAULT_TIMEOUT`). |
-| `resumeSessionId` | no | Worker session/thread id. ZCode: `--resume <sess_…>`; Codex: `exec resume --json <id> -- <prompt>`. |
+| `resumeSessionId` | no | Start a new execution using an existing CLI session/thread handle after its previous execution has ended; not a live-message channel. |
+| `request_key` | no | Stable identity for one request. Same key/input returns the original task; changed input returns 409. |
+| `projectId` | no | Existing project notebook. Its directory is the default unless `cwd` is explicit. Text agents also receive bounded goal/latest-note context. |
+| `parentTaskId` | no | Related task in the same project; records a relationship, does not create an automatic planner. |
+| `dependsOn` | no | Up to 32 distinct, already-ended task IDs, in the same project (or all unassociated). Their bounded handoffs become context; running upstream tasks are refused rather than queued. Text agents only. |
+| `handoff` | no | `true` asks ZCode/Codex for a structured agent self-report; it is not verification. Unsupported for Bash. |
 
-Response **201** → task `meta` (`taskId`, `status`, `pid`, …).
+Response **201** → task `meta` (`taskId`, `status`, `pid`, …), including when an identical keyed retry returns the original task.
 
 Errors:
 
 | Status | When |
 | --- | --- |
-| 400 | missing `prompt`, or `cwd` outside allowlist (`CwdNotAllowedError`) |
+| 400 | invalid input, unsupported context injection, or `cwd` outside allowlist |
+| 404 | referenced project not found |
+| 409 | request key/content conflict, task ID conflict, or reserved request requiring recovery |
 | 429 | concurrent RUNNING tasks at `AGENT_HUB_MAX_CONCURRENT` (`concurrent_cap`) |
 | 500 | unexpected |
+
+## 重试、接续和通知的约定
+
+### 重试同一次请求
+
+上游 Agent 应在首次派发前生成 `request_key`，保存它，并在网络不确定时使用相同 key 和相同输入重试。不要每次重试都生成新 key。同 key 改内容会返回 409；故意再执行一次才使用新 key。
+
+请求身份预留与启动进程不可能构成一个事务。若 key 已预留但任务登记尚不可读，接口会返回需要恢复的冲突和原任务编号，**不会自动重复启动**。检查并恢复该编号，再读取原请求；不要把未知启动结果当作安全重试新执行的依据。
+
+### 项目与接续记录
+
+| HTTP | 用途 | 对应工具 |
+| --- | --- | --- |
+| `GET /api/projects` | 项目列表、最新说明及任务数量 | `swarm_projects` |
+| `POST /api/projects` | 显式登记或更新 `{id,name,goal,cwd?}` | `swarm_project_set` |
+| `GET /api/projects/:id/context` | 目标、接续历史、相关任务与上次确认后变化 | `swarm_project_context` |
+| `POST /api/projects/:id/notes` | 追加 `{body,author?,sourceTaskIds?,request_key?}` | `swarm_project_note` |
+| `POST /api/projects/:id/seen` | 确认 `{viewerId?,through}` | `swarm_project_seen` |
+
+`context` 接受 `viewerId`、`after`、`limit`；默认最新 20 条接续记录，最大 100。返回 `changesSinceVisit.after/through` 序号。读取不推进进度；确认时传实际读到的 `through`，不能跳到未来。不同阅读者使用不同 `viewerId`。
+
+项目目标只能显式更新。接续记录追加保存，不能覆盖目标或历史；来源任务必须存在并属于同一项目。建议主 Agent 在阶段结束时记录“已确认 / 待验证 / 下一步”，下次开始先读取。平台不会自动生成摘要或认定项目完成。
+
+### Agent 的结构化交接
+
+设置 `handoff: true` 后，文字 Agent 的提示会包含输出约定。最终消息可包含：
+
+````markdown
+## Agent Hub Handoff
+```json
+{"schemaVersion":1,"status":"partial","summary":"完成修改，尚未运行完整测试","verification":["针对性测试通过"],"nextSteps":["执行完整测试"],"artifacts":["src/example.ts"]}
+```
+````
+
+`status` 为 `success | partial | blocked`，`summary` 非空；三个数组选填。接口详情的 `handoff` 与任务目录 `handoff.json` 记录 `reported / missing / invalid / interrupted` 及来源。Agent 说通过不等于平台验证通过。Bash 的 prompt 是字面脚本，不能使用 handoff 或依赖文字注入；项目关联仅用于归类和默认目录。
+
+### 完成通知
+
+宿主必须通过 `onCompletion`，或插件的 `activeAgentGetter` 接上接收方。仅启动看板不保证通知当前聊天。需要跨重启补投时再提供稳定 `consumerId`。回调失败应抛错，平台保留处理位置并重试；成功后才确认。接收成功与确认之间若退出，可能重复投递，接收方应按任务编号去重。
 
 ## Ticket file shapes (batch script)
 
@@ -44,6 +90,9 @@ adapter: zcode
 mode: edit
 cwd: /absolute/path/under/task-roots
 timeout: 7200
+type: task
+status: ready-for-agent
+handoff: true
 blockedBy: []          # ticket ids that must COMPLETE first
 parallel: true         # eligible immediately if blockedBy empty/satisfied
 ---
@@ -63,18 +112,33 @@ Do not invent APIs.
   "mode": "edit",
   "cwd": "/absolute/path/under/task-roots",
   "timeout": 7200,
+  "type": "task",
+  "status": "ready-for-agent",
+  "handoff": true,
   "blockedBy": [],
   "parallel": true
 }
 ```
 
+### Whole-batch preflight
+
+Before sending any task, the script reads every file and validates all supported execution fields. It then reads the selected board's roster and checks the complete local dependency graph. Invalid types, duplicate ticket identities in the same project, self-dependencies, unknown dependencies, and cycles abort the entire batch with exit code 1 and **zero dispatch POSTs**. Cycle errors include the path, for example `A -> B -> C -> A`. This validation also covers tickets that are not currently ready.
+
+Dependencies may refer to another local ticket or to a ticket already present in the remote roster **in the same project**. An unknown dependency is an input error; a known but unfinished dependency simply keeps its downstream ticket blocked. Project-scoped identical ticket names are allowed. Explicit `ticket` wins; otherwise Markdown uses its filename stem and JSON uses its source filename, which is also recorded on the board.
+
+`status` remains an open text field: values such as `pending` and `in_progress` remain valid and are skipped by the existing readiness filter. The preflight neither queues work nor invents a new scheduler. `request_key` in a file cannot override the stable key derived by this script; to request a genuinely new attempt, explicitly use a new ticket identity. Object conditions retain their mechanical/self-report meanings below.
+
 ### Parallel vs blocked-by
 
-- **`blockedBy`**: list of other ticket ids. A ticket is eligible only when every listed ticket already has a task in `.swarm-runs` with `status === 'COMPLETED'` (mechanical finish — **not** a semantic pass).
+- **`blockedBy`**: list of other ticket ids. A ticket is eligible only when every listed ticket's latest attempt on the selected board has `status === 'COMPLETED'` (mechanical finish — **not** a semantic pass).
 - **`parallel: true`** (default): eligible tickets are POSTed in one batch pass (still subject to `AGENT_HUB_MAX_CONCURRENT`).
 - **`parallel: false`**: script posts at most one newly eligible ticket per pass (serial).
 
-Skipped tickets (still blocked / already dispatched) are reported; nothing is invented.
+The batch script always reads the board selected by `--base-url`, including archived tasks, and separates ticket identities by project. It uses a stable request key derived from the absolute ticket directory, project ID, and ticket ID (or filename). Moving the directory changes that key. Existing dispatched ticket IDs are skipped; editing a ticket does not silently start another attempt.
+
+JSON ticket `blockedBy` also accepts `{ "ticket": "T-11", "condition": "ended" }` or `condition: "self-report-success"`. `ended` accepts any terminal mechanical state. `self-report-success` requires a completed process and a valid handoff whose Agent claims success; **it is an explicit trust choice, not verified acceptance**. Legacy strings retain the completed gate. Prefer JSON for object conditions: the Markdown parser supports only flat fields and simple lists.
+
+For text agents, resolved blockers are also passed as `dependsOn` context. Bash uses the gate only and receives no added prose. Skipped tickets (still blocked / already dispatched) are reported; nothing is invented.
 
 ### Eligibility filter (batch script only)
 
@@ -105,7 +169,7 @@ Not required in every ticket file (directory-level defaults).
 
 ## COMPLETED ≠ success
 
-`meta.status = COMPLETED` only means the process exited 0. For meaning:
+`meta.status = COMPLETED` is a mechanical completion state. Normally it accompanies exit 0; recovered records can lack an exit code. It does not establish content success. For meaning:
 
 ```bash
 curl -sS http://127.0.0.1:3000/api/tasks/<taskId> \
@@ -125,7 +189,7 @@ See DEMO.md. Outside → HTTP 400 / tool error — no silent fallback.
 ## Batch script
 
 ```bash
-# dry-run (print planned POSTs, no network)
+# dry-run (read the selected board and print planned POSTs; no dispatch POST)
 node scripts/dispatch-tickets.mjs ./tickets --dry-run --cwd "$PWD" --adapter zcode
 
 # dispatch eligible tickets to local board
@@ -139,7 +203,7 @@ Flags:
 
 | Flag | Meaning |
 | --- | --- |
-| `--dry-run` | Print payloads; do not POST. |
+| `--dry-run` | Read board state and print payloads; do not POST tasks. Requires the board to be reachable. |
 | `--base-url <url>` | Board origin (default `http://127.0.0.1:3000`). |
 | `--passes <n>` | Repeat eligibility scan up to n times (default 1) so blockers that finish mid-run can unlock. |
 | `--cwd <path>` | Default `cwd` when ticket omits it (else `AGENT_HUB_DEFAULT_CWD`). |
@@ -234,10 +298,10 @@ curl -sS http://127.0.0.1:3000/api/tasks/<taskId> \
 | 非目标 | 说明 |
 | --- | --- |
 | 平台语义判词 | 无 `verdict` / `outcome`；不因「看起来成功」自动标票完成（ADR-0002） |
-| 自动链式派发 | 不根据 transcript / closing 自动派下一张；`blockedBy` 只认机械 `COMPLETED`，仍由人/上游跑 batch 或加 `--passes` |
+| 自动语义规划 | 不根据 transcript 自动决定下一步；批处理按明确依赖条件选票，仍由人/上游启动或加 `--passes` |
 | 自动上游 PR | 不自动 `jj git push` / `gh pr create`；PR 序见 [DEMO.md](./DEMO.md)#jj-fork--upstream-pr-reusable，由上游执行 |
 
-Parking lot（verdict / event-log / MCP）：`.scratch/agent-hub/issues/01d-deferred-state-and-verdict.md`。
+历史延期讨论（其中事件登记现已实现，语义判词仍未实现）：`.scratch/agent-hub/issues/01d-deferred-state-and-verdict.md`。
 
 ## Related
 
@@ -245,4 +309,4 @@ Parking lot（verdict / event-log / MCP）：`.scratch/agent-hub/issues/01d-defe
 - [DEMO.md](./DEMO.md) — human runbook（含 harvest UI / TASK_ROOTS）
 - ZCode 默认模型：[docs/zcode-default-model.md](./docs/zcode-default-model.md)
 - [docs/adr/0002-platform-does-not-judge.md](./docs/adr/0002-platform-does-not-judge.md)
-- Parking lot for verdict / event-log / MCP: `.scratch/agent-hub/issues/01d-deferred-state-and-verdict.md`
+- Historical parking lot (event registration is now implemented; semantic verdicts are not): `.scratch/agent-hub/issues/01d-deferred-state-and-verdict.md`
