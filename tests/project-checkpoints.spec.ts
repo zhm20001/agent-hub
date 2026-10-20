@@ -64,3 +64,9 @@ test('a project with no cwd may retain only runsDir evidence, never its parent s
   const outside = join(root, 'sibling.log'); writeFileSync(outside, 'not project evidence');
   assert.throws(() => checkpoints.append('no-cwd', { ...input, artifacts: [{ path: outside, retain: true }] }), /outside/i);
 });
+
+test('runsDir evidence remains retainable after removing the project worktree', t => {
+  const { cwd, hub, checkpoints } = fixture(t); const file = join(hub.store.runsDir, 'report.txt'); writeFileSync(file, 'durable report'); rmSync(cwd, { recursive: true });
+  const record = checkpoints.append('p', { ...input, artifacts: [{ path: file, retain: true }] });
+  assert.equal(record.artifacts[0].bytes, 14); assert.equal(readFileSync(record.artifacts[0].retainedPath, 'utf8'), 'durable report');
+});

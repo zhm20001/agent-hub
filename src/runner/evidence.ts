@@ -20,7 +20,7 @@ function digest(bytes: Buffer) { return createHash('sha256').update(bytes).diges
 export function captureArtifact(input: { path: string; retain?: boolean }, roots: string[], destination: string): ArtifactReference {
   if (!input || typeof input.path !== 'string' || !isAbsolute(input.path) || (input.retain !== undefined && typeof input.retain !== 'boolean')) throw Error('Artifact requires an absolute path and optional boolean retain');
   const path = realpathSync(input.path);
-  if (!roots.some(root => under(path, realpathSync(root)))) throw Error(`Artifact is outside project and runs directories: ${path}`);
+  if (!roots.some(root => { try { return under(path, realpathSync(root)); } catch { return false; } })) throw Error(`Artifact is outside project and runs directories: ${path}`);
   const bytes = readBounded(path), sha256 = digest(bytes);
   const result: ArtifactReference = { path, sha256, bytes: bytes.length };
   if (input.retain) {
