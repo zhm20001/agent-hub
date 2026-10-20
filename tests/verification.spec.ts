@@ -79,3 +79,25 @@ test('interrupting verification records the stopped check and leaves later check
   const report = JSON.parse(readFileSync(join(root, 'report/report.json'), 'utf8'));
   assert.equal(report.checks[0].interrupted, 'SIGINT'); assert.equal(report.checks[1].status, 'not-run');
 });
+
+test('library source directories do not silently hide independent workspaces', t => {
+  const { root, run } = fixture(t); mkdirSync(join(root, 'lib/independent'), { recursive: true }); writeFileSync(join(root, 'lib/independent/Cargo.toml'), '[workspace]');
+  const { result, report } = run({ version: 1, inventory: [], checks: [check('old', '')] });
+  assert.equal(result.status, 1); assert.equal(report.sources.status, 'changed');
+});
+
+test('a successful leader cannot leave children writing its check log after completion', { skip: process.platform === 'win32' }, async t => {
+  const { root, run } = fixture(t);
+  const background = 'setTimeout(()=>console.log("late output"),600)';
+  const command = `const {spawn}=require('node:child_process');const p=spawn(process.execPath,['-e',${JSON.stringify(background)}],{stdio:'inherit'});p.unref();`;
+  const { result, report } = run({ version: 1, checks: [check('leaves child', command, { timeoutMs: 100 })] });
+  assert.equal(result.status, 1); assert.equal(report.checks[0].status, 'failed');
+  const before = readFileSync(join(root, 'report/1.log'), 'utf8'); await new Promise(r => setTimeout(r, 750));
+  assert.equal(readFileSync(join(root, 'report/1.log'), 'utf8'), before);
+});
+
+test('generated directories are excluded only by an explicit, reported manifest declaration', t => {
+  const { root, run } = fixture(t); mkdirSync(join(root, 'lib')); writeFileSync(join(root, 'lib/package.json'), '{}');
+  const { result, report } = run({ version: 1, inventory: [], inventoryExcludes: ['lib'], checks: [check('scoped', '')] });
+  assert.equal(result.status, 0); assert.deepEqual(report.sources.inventoryExcludes, ['lib']);
+});

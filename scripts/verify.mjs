@@ -5,17 +5,18 @@ import { createHash } from 'node:crypto';
 import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
-const skippedDirectories = new Set(['node_modules', 'target', 'vendor', 'lib', 'dist', '.git', '.jj', '.swarm-runs', '.scratch']);
+const skippedDirectories = new Set(['node_modules', '.git', '.jj', '.swarm-runs', '.scratch']);
 function fileHash(path) {
   if (!statSync(path).isFile() || statSync(path).size > 1024 * 1024) throw Error(`Matrix source must be a file of at most 1 MiB: ${path}`);
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
-function inventory(root) {
+function inventory(root, exclusions = []) {
   const entries = [];
   function walk(dir) {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name);
-      if (entry.isDirectory() && !skippedDirectories.has(entry.name) && (!entry.name.startsWith('.') || entry.name === '.github')) walk(path);
+      const relativePath = relative(root, path).split(sep).join('/');
+      if (entry.isDirectory() && !skippedDirectories.has(entry.name) && !exclusions.some(exclusion => relativePath === exclusion || relativePath.startsWith(exclusion + '/'))) walk(path);
       if (!entry.isFile()) continue;
       const name = relative(root, path).split(sep).join('/');
       if (['package.json', 'Cargo.toml'].includes(entry.name) || /^\.github\/workflows\/[^/]+\.ya?ml$/.test(name)) entries.push({ path: name, sha256: fileHash(path) });
@@ -33,7 +34,7 @@ function sourceIssues(root, manifest) {
   const issues = [];
   if (manifest.inventory !== undefined) {
     let found;
-    try { found = inventory(root); } catch (error) { issues.push(`Inventory unavailable: ${error.message}`); found = []; }
+    try { found = inventory(root, manifest.inventoryExcludes ?? []); } catch (error) { issues.push(`Inventory unavailable: ${error.message}`); found = []; }
     const actual = new Map(found.map(source => [source.path, source.sha256]));
     const expected = new Map(manifest.inventory.map(source => [source.path, source.sha256]));
     for (const path of new Set([...actual.keys(), ...expected.keys()])) if (actual.get(path) !== expected.get(path)) issues.push(`Inventory changed: ${path}`);
@@ -44,10 +45,14 @@ function sourceIssues(root, manifest) {
   }
   return issues;
 }
+function validateExclusions(exclusions) {
+  if (!Array.isArray(exclusions) || exclusions.some(path => typeof path !== 'string' || !path || path.includes('\\') || path.startsWith('/') || path.split('/').some(segment => !segment || segment === '.' || segment === '..'))) throw Error('inventoryExcludes must contain relative directory paths');
+}
 function validate(manifest) {
   if (!manifest || manifest.version !== 1 || !Array.isArray(manifest.checks) || !manifest.checks.length || manifest.checks.length > 100) throw Error('Manifest v1 requires 1–100 checks');
   for (const field of ['sources', 'inventory']) if (manifest[field] !== undefined && (!Array.isArray(manifest[field]) || manifest[field].some(source => !source || typeof source.path !== 'string' || !/^[a-f0-9]{64}$/.test(source.sha256)))) throw Error(`Invalid ${field}`);
   if (manifest.root !== undefined && (typeof manifest.root !== 'string' || manifest.root.includes('\0'))) throw Error('Invalid manifest root');
+  validateExclusions(manifest.inventoryExcludes ?? []);
   const names = new Set();
   for (const check of manifest.checks) {
     if (!check || typeof check.name !== 'string' || !check.name.trim() || names.has(check.name)) throw Error('Checks require distinct nonempty names');
@@ -72,23 +77,34 @@ function runCommand(check, root, logPath) {
     process.once('SIGINT', onInterrupt); process.once('SIGTERM', onTerminate);
     const timer = setTimeout(() => { timedOut = true; stop(); }, check.timeoutMs ?? 900000);
     child.on('error', failure => { error = failure.message; });
-    child.on('close', (exitCode, signal) => {
-      clearTimeout(timer); closeSync(fd);
+    child.on('close', async (exitCode, signal) => {
+      clearTimeout(timer);
+      const groupAlive = () => {
+        if (process.platform === 'win32' || !child.pid) return false;
+        try { process.kill(-child.pid, 0); return true; } catch (failure) { return failure.code === 'EPERM'; }
+      };
+      const lingeringChildren = groupAlive();
+      if (lingeringChildren) {
+        stop();
+        const deadline = Date.now() + 500;
+        while (groupAlive() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      closeSync(fd);
       process.removeListener('SIGINT', onInterrupt); process.removeListener('SIGTERM', onTerminate);
-      resolveResult({ status: exitCode === 0 && !signal && !error && !timedOut && !interrupted ? 'passed' : 'failed', exitCode, signal, timedOut, ...(interrupted ? { interrupted } : {}), ...(error ? { error } : {}) });
+      resolveResult({ status: exitCode === 0 && !signal && !error && !timedOut && !interrupted && !lingeringChildren ? 'passed' : 'failed', exitCode, signal, timedOut, lingeringChildren, ...(interrupted ? { interrupted } : {}), ...(error ? { error } : {}) });
     });
   });
 }
 async function main() {
-  const [manifestPath, outputPath] = process.argv.slice(2);
-  if (manifestPath === '--inventory' && outputPath) { console.log(JSON.stringify(inventory(realpathSync(outputPath)), null, 2)); return; }
-  if (!manifestPath || !outputPath) throw Error('Usage: verify.mjs <manifest.json> <new-report-directory> | --inventory <root>');
+  const [manifestPath, outputPath, ...exclusions] = process.argv.slice(2);
+  if (manifestPath === '--inventory' && outputPath) { validateExclusions(exclusions); console.log(JSON.stringify(inventory(realpathSync(outputPath), exclusions), null, 2)); return; }
+  if (!manifestPath || !outputPath || exclusions.length) throw Error('Usage: verify.mjs <manifest.json> <new-report-directory> | --inventory <root>');
   const bytes = readFileSync(manifestPath), manifest = JSON.parse(bytes); validate(manifest);
   const root = realpathSync(resolve(dirname(resolve(manifestPath)), manifest.root ?? '.'));
   const issues = sourceIssues(root, manifest);
   const output = resolve(outputPath); mkdirSync(output, { mode: 0o700 });
   const report = { version: 1, manifestPath: resolve(manifestPath), manifestSha256: createHash('sha256').update(bytes).digest('hex'), root, platform: process.platform,
-    startedAt: new Date().toISOString(), sources: { status: issues.length ? 'changed' : 'matched', issues }, checks: [], requiredChecksPassed: false };
+    startedAt: new Date().toISOString(), sources: { status: issues.length ? 'changed' : 'matched', inventoryExcludes: manifest.inventoryExcludes ?? [], issues }, checks: [], requiredChecksPassed: false };
   const save = () => writeFileSync(join(output, 'report.json'), JSON.stringify(report, null, 2) + '\n');
   save();
   let interrupted = false;

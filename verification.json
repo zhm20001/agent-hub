@@ -18,7 +18,7 @@
     },
     {
       "path": "scripts/verify.mjs",
-      "sha256": "5e2b1c2ff029651eded28b1d252281053a329cac562c53fd3eda0c2313e97f3b"
+      "sha256": "ccffc75ef2d544bf75f0450f41da8224ab3b2a4083f52f3357cacff9b2884ef9"
     }
   ],
   "checks": [
