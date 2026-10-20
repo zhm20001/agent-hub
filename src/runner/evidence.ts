@@ -26,7 +26,7 @@ export function captureArtifact(input: { path: string; retain?: boolean }, roots
   if (input.retain) {
     mkdirSync(destination, { recursive: true });
     const canonicalDestination = realpathSync(destination);
-    if (!under(canonicalDestination, realpathSync(roots[1]))) throw Error('Evidence destination is outside runs directory');
+    if (!under(canonicalDestination, realpathSync(roots.at(-1)!))) throw Error('Evidence destination is outside runs directory');
     const retainedPath = join(canonicalDestination, sha256);
     // A preexisting content-addressed file must still contain the recorded bytes.
     if (existsSync(retainedPath)) {

@@ -1,4 +1,4 @@
-import { join, dirname } from 'node:path';
+import { join } from 'node:path';
 import type { Project } from './projects.ts';
 import type { TaskStore } from './runner/task-store.ts';
 import { artifactState, captureArtifact, type ArtifactReference } from './runner/evidence.ts';
@@ -68,7 +68,7 @@ export class ProjectCheckpoints {
       const previous = db.prepare('SELECT sequence FROM hub_project_checkpoints WHERE project_id=? ORDER BY sequence DESC LIMIT 1').get(projectId);
       if (Number(previous?.sequence ?? 0) !== input.expectedSequence) throw new CheckpointError('Checkpoint sequence conflict: reread current state before updating', 409);
       const artifacts = (input.artifacts ?? []).map(input => {
-        try { return captureArtifact(input, [project.cwd ?? dirname(this.store.runsDir), this.store.runsDir], join(this.store.runsDir, 'project-evidence', projectId)); }
+        try { return captureArtifact(input, [...(project.cwd ? [project.cwd] : []), this.store.runsDir], join(this.store.runsDir, 'project-evidence', projectId)); }
         catch (error) { throw new CheckpointError((error as Error).message); }
       });
       const record = { author, summary, nextStep, revision, pullRequest, decision: input.decision ?? 'pending', checks, sourceTaskIds, artifacts, createdAt: Date.now(), source: 'caller' as const };

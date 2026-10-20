@@ -57,3 +57,10 @@ test('note limits expose omitted history without silently replacing the current 
   assert.equal(context.notesPage.total, 3); assert.equal(context.notesPage.truncated, true);
   assert.equal(context.checkpoint.summary, input.summary); assert.equal(context.latestNote.body, 'history 2');
 });
+
+test('a project with no cwd may retain only runsDir evidence, never its parent siblings', t => {
+  const { root, hub, checkpoints } = fixture(t);
+  hub.projects.upsert({ id: 'no-cwd', name: 'No directory', goal: 'Intent' });
+  const outside = join(root, 'sibling.log'); writeFileSync(outside, 'not project evidence');
+  assert.throws(() => checkpoints.append('no-cwd', { ...input, artifacts: [{ path: outside, retain: true }] }), /outside/i);
+});
