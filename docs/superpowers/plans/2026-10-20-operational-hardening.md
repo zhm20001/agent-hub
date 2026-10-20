@@ -51,3 +51,7 @@ Files: docs/AGENT_GUIDE.md, DISPATCH.md, docs/ARCHITECTURE.md, docs/README.md, n
 - Run full `npm test`, `npm run typecheck`, `npm run build`; run `node scripts/verify.mjs verification.json <fresh-temp-dir>` to exercise the actual reporting path. Inspect reports.
 - Request read-only architecture/correctness review using requesting-code-review; fix concrete findings with regressions and scoped commits.
 - Record exact results and known limits in a completion document; commit only owned paths. No deployment/service restart/push or edits to the preexisting tickets.
+
+## Completion
+
+Completed 2026-10-20, including independent-review corrections. Final isolated matrix: 29 files / 235 passing tests, typecheck/build exit 0, source pins matched. See [delivery and limitations](../../reports/2026-10-20-agenthub-operational-hardening-results.md). Existing service was not restarted and changes were not pushed.

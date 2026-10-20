@@ -21,6 +21,7 @@ Live path = swarm board（`npm run start`，[DEMO.md](../DEMO.md)，[DISPATCH.md
 ## 运行修复
 
 - [派发预检、工作区占用、当前检查点和验证证据](OPERATIONS.md)。
+- [高优先级修复交付与验证结果](reports/2026-10-20-agenthub-operational-hardening-results.md)。
 
 ## 实跑复盘
 
