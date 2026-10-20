@@ -6,7 +6,7 @@ import { openSync, closeSync, writeFileSync, readFileSync, existsSync } from 'no
 import { createHash } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { assertCwdAllowed, resolveTaskRoots, taskRootsEnvSet } from './task-roots.ts';
-import { assertUnderConcurrentCap } from './concurrency.ts';
+import { assertUnderConcurrentCap, ConcurrentCapError } from './concurrency.ts';
 import { locateRunTranscript } from './transcript.ts';
 import { resolveDefaultTimeout } from './timeout-policy.ts';
 import { resolveModelInfo } from './model-info.ts';
@@ -305,29 +305,37 @@ export function createTaskEngine(settings: TaskEngineOptions) {
    */
 
 
+  function normalizeOptions(options: DispatchOptions) {
+    return { ...options, cwd: resolve(options.cwd ?? dirname(store.runsDir)), adapter: options.adapter === 'shell' ? 'bash' : options.adapter ?? 'zcode', mode: options.mode ?? 'edit', workspaceAccess: options.workspaceAccess ?? 'write' as WorkspaceAccess, timeout: options.timeout ?? resolveDefaultTimeout(env) };
+  }
   function preflight(options: DispatchOptions) {
     validateDispatch(options);
-    const input = { ...options, cwd: resolve(options.cwd ?? dirname(store.runsDir)), adapter: options.adapter === 'shell' ? 'bash' : options.adapter ?? 'zcode', workspaceAccess: options.workspaceAccess ?? 'write' as WorkspaceAccess };
-    const prepared = settings.prepareDispatch?.(input, options) ?? input;
+    const normalized = normalizeOptions(options);
+    const prepared = settings.prepareDispatch?.(normalized, options) ?? normalized;
     validateDispatch(prepared);
+    const cwd = resolve(prepared.cwd ?? dirname(store.runsDir));
+    const access = prepared.workspaceAccess ?? 'write';
     const checks: LaunchCheck[] = [];
-    try { assertCwdAllowed(prepared.cwd!, resolveTaskRoots(env, dirname(store.runsDir)), { allowTmpDemoPrefix: !taskRootsEnvSet(env) }); checks.push({ name: 'cwd-allowed', ok: true }); }
+    try { assertCwdAllowed(cwd, resolveTaskRoots(env, dirname(store.runsDir)), { allowTmpDemoPrefix: !taskRootsEnvSet(env) }); checks.push({ name: 'cwd-allowed', ok: true }); }
     catch (error) { checks.push({ name: 'cwd-allowed', ok: false, reason: (error as Error).message }); }
     if (checks[0].ok) {
-      try { checks.push(...inspectLaunch(lookupAdapter(input.adapter), { ...prepared, cwd: prepared.cwd! }, env).checks); }
+      try { checks.push(...inspectLaunch(lookupAdapter(prepared.adapter ?? 'zcode'), { ...prepared, cwd }, env).checks); }
       catch (error) { if (!(error instanceof UnknownAdapterError)) throw error; checks.push({ name: 'adapter', ok: false, reason: error.message }); }
-      if (checks.every(check => check.ok)) {
-        try { assertWorkspaceAvailable(store, prepared.cwd!, input.workspaceAccess); checks.push({ name: 'workspace', ok: true }); }
+      try { assertUnderConcurrentCap(env, store.runsDir); checks.push({ name: 'capacity', ok: true }); }
+      catch (error) { if (!(error instanceof ConcurrentCapError)) throw error; checks.push({ name: 'capacity', ok: false, reason: error.message }); }
+      if (checks.some(check => check.name === 'cwd-access' && check.ok)) {
+        try { assertWorkspaceAvailable(store, cwd, access); checks.push({ name: 'workspace', ok: true }); }
         catch (error) { checks.push({ name: 'workspace', ok: false, reason: (error as Error).message }); }
       }
     }
-    return { ready: checks.every(check => check.ok), cwd: prepared.cwd, workspaceAccess: input.workspaceAccess, checks };
+    return { ready: checks.every(check => check.ok), cwd, workspaceAccess: access, checks };
   }
 
   function spawnDetachedTask(options: DispatchOptions): TaskMeta {
     validateDispatch(options);
-    const normalized = { ...options, cwd: resolve(options.cwd ?? dirname(store.runsDir)), adapter: options.adapter === 'shell' ? 'bash' : options.adapter ?? 'zcode', mode: options.mode ?? 'edit', workspaceAccess: options.workspaceAccess ?? 'write', timeout: options.timeout ?? resolveDefaultTimeout(env) };
-    const fingerprint = createHash('sha256').update(JSON.stringify(Object.fromEntries(Object.entries(normalized).filter(([, value]) => value !== undefined).sort(([a], [b]) => a.localeCompare(b))))).digest('hex');
+    const normalized = normalizeOptions(options);
+    // Omit default write from the fingerprint to preserve pre-upgrade request keys.
+    const fingerprint = createHash('sha256').update(JSON.stringify(Object.fromEntries(Object.entries(normalized).filter(([key, value]) => value !== undefined && !(key === 'workspaceAccess' && value === 'write')).sort(([a], [b]) => a.localeCompare(b))))).digest('hex');
     return store.withDispatchLock(() => {
       if (options.request_key) {
         const existing = store.request(options.request_key);

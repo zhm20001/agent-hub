@@ -89,3 +89,39 @@ test('launch rechecks a removed CLI and inherited provider config readability', 
   try { process.env[BUILTIN_PROVIDER_CONFIG_ENV] = root; assert.equal(resolveProviderConfigEnv(cli).status, 'blocked'); }
   finally { if (saved === undefined) delete process.env[BUILTIN_PROVIDER_CONFIG_ENV]; else process.env[BUILTIN_PROVIDER_CONFIG_ENV] = saved; }
 });
+
+test('default write preserves request fingerprints created before workspaceAccess existed', async t => {
+  const { cwd, store, engine } = fixture(t);
+  const { createHash } = await import('node:crypto');
+  const { resolveDefaultTimeout } = await import('../src/runner/timeout-policy.ts');
+  const options = { prompt: 'old work', adapter: 'bash', cwd, request_key: 'old-key' };
+  const normalized = { ...options, mode: 'edit', timeout: resolveDefaultTimeout(engine.env) };
+  const fingerprint = createHash('sha256').update(JSON.stringify(Object.fromEntries(Object.entries(normalized).sort(([a], [b]) => a.localeCompare(b))))).digest('hex');
+  store.create({ taskId: 'old', request_key: 'old-key', adapter: 'bash', cwd, label: '', prompt: options.prompt, status: 'COMPLETED', startTime: 1, timeout: 60 });
+  store.reserveRequest('old-key', fingerprint, 'old');
+  assert.equal(engine.spawnDetachedTask(options).taskId, 'old');
+  assert.equal(engine.spawnDetachedTask({ ...options, workspaceAccess: 'write' } as any).taskId, 'old');
+});
+
+test('preflight reports the global capacity separately from launchability', t => {
+  const { cwd, store, root } = fixture(t); own(store, cwd);
+  const engine = createTaskEngine({ store, env: { ...process.env, AGENT_HUB_TASK_ROOTS: root, AGENT_HUB_MAX_CONCURRENT: '1' } });
+  const result = (engine as any).preflight({ prompt: 'read', cwd, adapter: 'bash', workspaceAccess: 'read' });
+  assert.equal(result.checks.find((check: any) => check.name === 'capacity')?.ok, false);
+});
+
+test('nested independent worktrees do not inherit their parent repository occupancy', t => {
+  const { cwd, store, engine } = fixture(t); own(store, cwd);
+  const worktree = join(cwd, '.worktrees', 'feature'); mkdirSync(worktree, { recursive: true }); writeFileSync(join(worktree, '.git'), 'gitdir: elsewhere');
+  assert.equal((engine as any).preflight({ prompt: 'work', cwd: worktree, adapter: 'bash' }).ready, true);
+});
+
+test('completed leaders retain admission while their recorded process group still has a background writer', { skip: process.platform === 'win32' }, async t => {
+  const { cwd, engine } = fixture(t);
+  const task = engine.spawnDetachedTask({ prompt: '(sleep 2; printf changed > marker) >/dev/null 2>&1 &', adapter: 'bash', cwd });
+  t.after(() => { try { process.kill(-task.pid!, 'SIGKILL'); } catch {} });
+  const deadline = Date.now() + 1500;
+  while (engine.readTaskMeta(task.taskId)?.status === 'RUNNING') { assert.ok(Date.now() < deadline); await new Promise(r => setTimeout(r, 10)); }
+  process.kill(-task.pid!, 0);
+  assert.throws(() => engine.spawnDetachedTask({ prompt: 'echo next', adapter: 'bash', cwd }), { name: 'WorkspaceBusyError' });
+});

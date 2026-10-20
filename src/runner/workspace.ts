@@ -1,5 +1,5 @@
 import { existsSync, realpathSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import type { TaskStore } from './task-store.ts';
 import { recordedProcessPid } from './process-launcher.ts';
 import { isProcessAlive } from './timeout-policy.ts';
@@ -33,12 +33,17 @@ function processGroupAlive(pid: number | undefined): boolean {
 export function assertWorkspaceAvailable(store: TaskStore, cwd: string, access: WorkspaceAccess): string {
   const workspace = workspaceIdentity(cwd);
   const conflicts = store.list().filter(task => {
-    if (task.status !== 'RUNNING' && (!['KILLED', 'TIMEOUT_KILLED'].includes(task.status) || !processGroupAlive(task.pid ?? recordedProcessPid(store.dir(task.taskId))))) return false;
+    const recorded = recordedProcessPid(store.dir(task.taskId));
+    // Completed fixtures may carry arbitrary PIDs; only actual supervisor evidence owns a group.
+    const pid = ['KILLED', 'TIMEOUT_KILLED'].includes(task.status) ? task.pid ?? recorded : recorded ?? (task.workspace ? task.pid : undefined);
+    if (task.status !== 'RUNNING' && !processGroupAlive(pid)) return false;
     if (access === 'read' && task.workspaceAccess === 'read') return false;
     let other: string;
     try { other = task.workspace ?? workspaceIdentity(task.cwd); }
     catch { other = resolve(task.cwd); }
-    return workspace === other || workspace.startsWith(other + '/') || other.startsWith(workspace + '/');
+    const repository = (path: string) => existsSync(join(path, '.git')) || existsSync(join(path, '.jj'));
+    if (repository(workspace) && repository(other)) return workspace === other;
+    return workspace === other || workspace.startsWith(other + sep) || other.startsWith(workspace + sep);
   });
   if (conflicts.length) throw new WorkspaceBusyError(workspace, conflicts.map(task => task.taskId));
   return workspace;
