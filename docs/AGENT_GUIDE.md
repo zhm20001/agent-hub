@@ -14,13 +14,19 @@
 **Agent Hub 的破局方案**：
 - Master Agent 仅需发起轻量的异步派发，立即获得 `taskId`。
 - 子任务在独立的操作系统进程中脱钩运行，所有输出直接落盘于物理文件 `.swarm-runs/<taskId>/raw.log`。
-- 任务结束时通过文件监听器（Watcher）将执行简报主动唤醒并注入 Master Agent 的上下文。
+- 任务结束时通过文件监听器（Watcher）将执行简报交给已配置的接收方；这不保证任意桌面聊天自动唤醒。
 
 ---
 
+## 运行保护与验收
+
+派发前可用 `swarm_preflight`，写入任务默认独占工作区；仅只读任务显式声明 `workspaceAccess=read`。`swarm_status.activity` 提供事实，不因无输出判卡死。用 `swarm_project_checkpoint` 将当前 revision/PR、逐项检查和调用者验收决定与历史 note/机械状态分开；记录前先读取 checkpoint.sequence，避免旧会话覆盖新进展。
+
+完整参数、限制与验证清单见 [运行指南](OPERATIONS.md)。
+
 ## 2. 工具定义与契约 (Tool Specifications)
 
-在 DSH 插件激活后，主 Agent 的工具链中会自动注入以下 4 个标准工具：
+在 DSH 插件激活后，主 Agent 的工具链中会自动注入以下标准工具：
 
 ### 2.1 `swarm_dispatch` (派发子 Agent 任务)
 启动一个后台脱钩运行的子 Agent 任务。

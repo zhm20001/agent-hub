@@ -17,10 +17,11 @@ Live endpoint: `POST /api/tasks/dispatch` on the board (`npm run start` → `:30
 | `adapter` | no | `zcode` (default), `codex`, or `bash`. Unknown names are refused (no silent ZCode fallback). |
 | `mode` | no | `edit` (default), `build`, `plan`, `yolo`. |
 | `cwd` | no | Absolute path; **must** be under `AGENT_HUB_TASK_ROOTS` (or default allowlist). HTTP **400** if outside. |
+| `workspaceAccess` | no | `write` by default; `read` permits shared readers. Scheduling declaration, not a permission sandbox. Same-workspace writer conflicts return 409. |
 | `timeout` | no | Seconds before watchdog kill (default `7200` / `AGENT_HUB_DEFAULT_TIMEOUT`). |
 | `resumeSessionId` | no | Start a new execution using an existing CLI session/thread handle after its previous execution has ended; not a live-message channel. |
 | `request_key` | no | Stable identity for one request. Same key/input returns the original task; changed input returns 409. |
-| `projectId` | no | Existing project notebook. Its directory is the default unless `cwd` is explicit. Text agents also receive bounded goal/latest-note context. |
+| `projectId` | no | Existing project notebook. Its directory is the default unless `cwd` is explicit. Text agents also receive goal/latest-note/checkpoint context. |
 | `parentTaskId` | no | Related task in the same project; records a relationship, does not create an automatic planner. |
 | `dependsOn` | no | Up to 32 distinct, already-ended task IDs, in the same project (or all unassociated). Their bounded handoffs become context; running upstream tasks are refused rather than queued. Text agents only. |
 | `handoff` | no | `true` asks ZCode/Codex for a structured agent self-report; it is not verification. Unsupported for Bash. |
@@ -33,9 +34,17 @@ Errors:
 | --- | --- |
 | 400 | invalid input, unsupported context injection, or `cwd` outside allowlist |
 | 404 | referenced project not found |
-| 409 | request key/content conflict, task ID conflict, or reserved request requiring recovery |
+| 409 | request key/content conflict, task ID conflict, or reserved request requiring recovery, or occupied workspace |
 | 429 | concurrent RUNNING tasks at `AGENT_HUB_MAX_CONCURRENT` (`concurrent_cap`) |
 | 500 | unexpected |
+
+## Launch and verification facts
+
+`POST /api/tasks/preflight` / `swarm_preflight` inspect launch readiness without starting an Agent. Task details include bounded `activity` facts; silence is not a stalled verdict.
+
+`POST /api/projects/:id/checkpoints` / `swarm_project_checkpoint` record caller-authored current state and acceptance with sequence CAS, revision, explicit checks and optional retained artifacts. These remain distinct from process status and history notes.
+
+See [operations](docs/OPERATIONS.md) for contracts, limits and the explicit verification matrix runner.
 
 ## 重试、接续和通知的约定
 
