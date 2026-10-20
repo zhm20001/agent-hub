@@ -36,7 +36,8 @@
     "restart": "bash scripts/restart-board.sh",
     "dispatch-tickets": "node scripts/dispatch-tickets.mjs",
     "typecheck": "tsc --noEmit --allowImportingTsExtensions",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "verify": "node scripts/verify.mjs verification.json"
   },
   "dependencies": {
     "@fontsource-variable/public-sans": "^5.3.0",

@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "root": ".",
+  "inventory": [
+    {
+      "path": "package.json",
+      "sha256": "06bdf81757392bd6e1e695527ebc571bf614c5fd38e94d3ee84e7c5b758b151b"
+    }
+  ],
+  "sources": [
+    {
+      "path": "scripts/test.mjs",
+      "sha256": "cd50b02aa93e2868e563c015eb94f498f872efa3a27b810b3ee9310caabfc4ea"
+    },
+    {
+      "path": "scripts/build.mjs",
+      "sha256": "d1a9576813a9b7dac135c6e460d22005620071047599a329dbf45241bee16905"
+    },
+    {
+      "path": "scripts/verify.mjs",
+      "sha256": "5e2b1c2ff029651eded28b1d252281053a329cac562c53fd3eda0c2313e97f3b"
+    }
+  ],
+  "checks": [
+    {
+      "name": "isolated node test files",
+      "argv": [
+        "node",
+        "scripts/test.mjs"
+      ],
+      "required": true
+    },
+    {
+      "name": "typescript frontend and server",
+      "argv": [
+        "node",
+        "node_modules/typescript/bin/tsc",
+        "--noEmit",
+        "--allowImportingTsExtensions"
+      ],
+      "required": true
+    },
+    {
+      "name": "frontend and publishable server build",
+      "argv": [
+        "node",
+        "scripts/build.mjs"
+      ],
+      "required": true
+    }
+  ]
+}
