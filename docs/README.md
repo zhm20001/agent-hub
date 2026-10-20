@@ -18,6 +18,12 @@ Live path = swarm board（`npm run start`，[DEMO.md](../DEMO.md)，[DISPATCH.md
 
 ---
 
+## 实跑复盘
+
+- [Markview OFM lite：AgentHub 实跑复盘（2026-10-20）](reports/2026-10-20-markview-ofm-agenthub-retrospective.md)：任务失败、误操作、审查返工、额度阻塞、接续与 CI 的证据记录。
+
+---
+
 ## ⚡ 极速概览 (Quick Summary)
 
 - **为什么用脱钩文件流？**
