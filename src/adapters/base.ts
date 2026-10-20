@@ -57,6 +57,8 @@ export interface AdapterEnvDelta {
 export interface WorkerAdapter {
   readonly name: string;
   readonly description: string;
+  /** Optional bounded protocol observation; no liveness or outcome judgement. */
+  observeActivity?(tail: string): import('./activity.ts').AgentActivity;
   buildCommand(spec: AdapterCommandSpec): AdapterCommandResult;
 
   /**

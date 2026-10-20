@@ -1,3 +1,4 @@
+import { taskActivity } from './activity.ts';
 /** Queries own recovery and enrichment; HTTP and tools consume the same view. */
 import { adapterForSettlement } from '../adapters/registry.ts';
 import { existsSync } from 'node:fs';
@@ -32,7 +33,7 @@ export function createTaskQueries(engine: TaskEngine = defaultEngine) {
       ...(!meta.sessionId && located.sessionId ? { sessionId: located.sessionId } : {}),
     };
     if (Object.keys(patch).length) meta = updateTaskMeta(id, patch) ?? meta;
-    return { meta, record, document, transcriptPath: located.transcriptPath };
+    return { meta, record, document, transcriptPath: located.transcriptPath, adapter };
   }
 
   function getTaskDetail(id: string) {
@@ -40,6 +41,7 @@ export function createTaskQueries(engine: TaskEngine = defaultEngine) {
     if (!task) return null;
     return {
       ...task.meta,
+      activity: taskActivity(task.meta, store.dir(id), task.transcriptPath ?? task.record?.transcriptPath ?? null, task.adapter, engine.now()),
       report: store.readReport(id),
       rawLogTail: store.readLogTail(id),
       closingRecord: task.record,

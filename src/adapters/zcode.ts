@@ -1,3 +1,4 @@
+import { observeZcodeActivity } from './activity.ts';
 import { parseZcodeTranscript } from './transcript-format.ts';
 import { accessSync, constants, statSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -47,6 +48,7 @@ export function resolveZcodeCliPath(explicit?: string): { ok: true; path: string
 }
 
 export class ZCodeAdapter implements WorkerAdapter {
+  readonly observeActivity = observeZcodeActivity;
   readonly parseTranscript = parseZcodeTranscript;
   readonly name = 'zcode';
   readonly description = 'ZCode headless CLI subagent with structured json and resume rounds';
