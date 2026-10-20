@@ -149,6 +149,10 @@ export function registerSwarmTools(ctx?: DshContext, activeAgentGetter?: () => D
     parameters: { projectId: {type:'string',required:true}, body: {type:'string',required:true}, author: {type:'string',required:true}, sourceTaskIds: {type:'array',items:{type:'string'}}, request_key: {type:'string'} },
     async execute(args: any) { return hub.projects.appendNote(args.projectId, args); },
   });
+  ctx.tools.register({ name: 'swarm_project_checkpoint', description: 'Record caller-authored current state and acceptance, separate from execution status. Requires the latest checkpoint sequence (0 initially); stale updates conflict.',
+    parameters: {projectId:{type:'string',required:true}, expectedSequence:{type:'number',required:true}, author:{type:'string',required:true}, summary:{type:'string',required:true}, nextStep:{type:'string',required:true}, revision:{type:'string'}, pullRequest:{type:'string'}, decision:{type:'string'}, sourceTaskIds:{type:'array',items:{type:'string'}}, checks:{type:'array',items:{type:'object'}}, artifacts:{type:'array',items:{type:'object'}}},
+    async execute(args: any) { return hub.checkpoints.append(args.projectId, args); },
+  });
   ctx.tools.register({
     name: 'swarm_project_seen', description: 'Explicitly acknowledge project changes through the cursor returned by swarm_project_context.',
     parameters: {projectId:{type:'string',required:true},viewerId:{type:'string'},through:{type:'number',required:true}},

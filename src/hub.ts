@@ -27,7 +27,7 @@ export function createHub(options: HubOptions = {}) {
         // The caller explicitly supplies cwd to override the project's working directory.
         cwd = original.cwd ?? context.project.cwd ?? input.cwd;
         if (!['bash','shell'].includes(input.adapter ?? 'zcode')) {
-          projectContextText = JSON.stringify({ project: context.project, latestNote: context.latestNote });
+          projectContextText = JSON.stringify({ project: context.project, latestNote: context.latestNote, checkpoint: context.checkpoint });
         }
       }
       if (input.parentTaskId) {
@@ -67,7 +67,7 @@ export function createHub(options: HubOptions = {}) {
       return { ...detail, handoff: readTaskHandoff(store.dir(id)) };
     },
   };
-  return { store, engine, queries, projects, close: () => store.close() };
+  return { store, engine, queries, projects, checkpoints: projects.checkpoints, close: () => store.close() };
 }
 export type Hub = ReturnType<typeof createHub>;
 export const defaultHub = createHub();

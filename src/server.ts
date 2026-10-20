@@ -326,6 +326,9 @@ export function createApp(hub: Hub = defaultHub) {
     ...(req.query.limit !== undefined ? { limit: Number(req.query.limit) } : {}),
     ...(req.query.viewerId !== undefined ? { viewerId: String(req.query.viewerId) } : {}),
   })));
+  app.post('/api/projects/:id/checkpoints', (req, res, next) => {
+    try { res.status(201).json(hub.checkpoints.append(String(req.params.id), req.body ?? {})); } catch (error) { next(error); }
+  });
   app.post('/api/projects/:id/notes', (req, res) => res.status(201).json(hub.projects.appendNote(String(req.params.id), req.body ?? {})));
   app.post('/api/projects/:id/seen', (req, res) => res.json(hub.projects.markSeen(String(req.params.id), req.body ?? {})));
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => sendError(error, res));

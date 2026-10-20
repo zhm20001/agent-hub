@@ -1,3 +1,4 @@
+import { ProjectCheckpoints } from './project-checkpoints.ts';
 import { randomUUID } from 'node:crypto';
 import type { TaskStore } from './runner/task-store.ts';
 import type { TaskMeta } from './runner/task-types.ts';
@@ -24,6 +25,8 @@ export interface ProjectContext {
   latestNote: ProjectNote | null;
   notes: ProjectNote[];
   tasks: TaskMeta[];
+  checkpoint: ReturnType<ProjectCheckpoints['latest']>;
+  notesPage: { total: number; truncated: boolean };
   changesSinceVisit: { after: number; through: number; notes: ProjectNote[]; tasks: TaskMeta[] };
 }
 export class ProjectError extends Error {
@@ -46,7 +49,8 @@ function cursor(value: unknown, field: string): number {
 /** Project intent and append-only handovers; execution facts remain owned by TaskStore. */
 export class ProjectStore {
   private initialized = false;
-  constructor(private readonly store: TaskStore) {}
+  readonly checkpoints: ProjectCheckpoints;
+  constructor(private readonly store: TaskStore) { this.checkpoints = new ProjectCheckpoints(store, id => this.get(id)); }
   private get db() {
     const database = this.store.database;
     if (this.initialized) return database;
@@ -152,7 +156,8 @@ export class ProjectStore {
       const notes = this.db.prepare('SELECT * FROM hub_project_notes WHERE project_id=? ORDER BY sequence DESC LIMIT ?').all(projectId, limit).map(row => this.note(row));
       const changedIds = new Set(this.db.prepare("SELECT DISTINCT object_id FROM hub_project_events WHERE project_id=? AND kind='task' AND sequence>? AND sequence<=?").all(projectId, after, through).map(row => String(row.object_id)));
       const changedNotes = this.db.prepare('SELECT * FROM hub_project_notes WHERE project_id=? AND sequence>? AND sequence<=? ORDER BY sequence DESC').all(projectId, after, through).map(row => this.note(row));
-      return { project, latestNote: notes[0] ?? null, notes, tasks, changesSinceVisit: { after, through, notes: changedNotes, tasks: tasks.filter(task => changedIds.has(task.taskId)) } };
+      const total = Number(this.db.prepare('SELECT COUNT(*) AS count FROM hub_project_notes WHERE project_id=?').get(projectId)!.count);
+      return { project, checkpoint: this.checkpoints.latest(projectId), notesPage: { total, truncated: notes.length < total }, latestNote: notes[0] ?? null, notes, tasks, changesSinceVisit: { after, through, notes: changedNotes, tasks: tasks.filter(task => changedIds.has(task.taskId)) } };
     });
   }
   markSeen(projectId: string, options: { viewerId?: string; through?: number } = {}): { through: number } {

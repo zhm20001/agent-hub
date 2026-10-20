@@ -38,7 +38,10 @@ test('HTTP and agent tools share project context, idempotency and strict input v
     assert.match(text,/tail😀/); assert.match(text,/"done":true/);
     const detail=await tools.get('swarm_status').execute({taskId:task.taskId});
     assert.equal(detail.handoff.state,'missing'); assert.equal(detail.projectId,'p');
+    const cp = await tools.get('swarm_project_checkpoint').execute({projectId:'p',expectedSequence:0,author:'lead',summary:'Verified',nextStep:'Review',revision:'abc',decision:'pending'});
+    assert.equal((await post('/api/projects/p/checkpoints',{expectedSequence:0,author:'lead',summary:'stale',nextStep:'wait'})).status,409);
     const context=await tools.get('swarm_project_context').execute({projectId:'p'});
+    assert.equal(context.checkpoint.sequence,cp.sequence);
     assert.equal(context.latestNote.body,'Next: verify the pending result'); assert.ok(context.changesSinceVisit.tasks.length);
     await tools.get('swarm_project_seen').execute({projectId:'p',through:context.changesSinceVisit.through});
     assert.equal((await tools.get('swarm_project_context').execute({projectId:'p'})).changesSinceVisit.tasks.length,0);
