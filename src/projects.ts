@@ -27,7 +27,7 @@ export interface ProjectContext {
   tasks: TaskMeta[];
   checkpoint: ReturnType<ProjectCheckpoints['latest']>;
   notesPage: { total: number; truncated: boolean };
-  changesSinceVisit: { after: number; through: number; notes: ProjectNote[]; tasks: TaskMeta[] };
+  changesSinceVisit: { after: number; through: number; notes: ProjectNote[]; tasks: TaskMeta[]; checkpoint: ReturnType<ProjectCheckpoints['latest']> };
 }
 export class ProjectError extends Error {
   constructor(message: string, readonly statusCode = 400) { super(message); this.name = 'ProjectError'; }
@@ -157,7 +157,8 @@ export class ProjectStore {
       const changedIds = new Set(this.db.prepare("SELECT DISTINCT object_id FROM hub_project_events WHERE project_id=? AND kind='task' AND sequence>? AND sequence<=?").all(projectId, after, through).map(row => String(row.object_id)));
       const changedNotes = this.db.prepare('SELECT * FROM hub_project_notes WHERE project_id=? AND sequence>? AND sequence<=? ORDER BY sequence DESC').all(projectId, after, through).map(row => this.note(row));
       const total = Number(this.db.prepare('SELECT COUNT(*) AS count FROM hub_project_notes WHERE project_id=?').get(projectId)!.count);
-      return { project, checkpoint: this.checkpoints.latest(projectId), notesPage: { total, truncated: notes.length < total }, latestNote: notes[0] ?? null, notes, tasks, changesSinceVisit: { after, through, notes: changedNotes, tasks: tasks.filter(task => changedIds.has(task.taskId)) } };
+      const checkpoint = this.checkpoints.latest(projectId);
+      return { project, checkpoint, notesPage: { total, truncated: notes.length < total }, latestNote: notes[0] ?? null, notes, tasks, changesSinceVisit: { after, through, checkpoint: checkpoint && checkpoint.sequence > after ? checkpoint : null, notes: changedNotes, tasks: tasks.filter(task => changedIds.has(task.taskId)) } };
     });
   }
   markSeen(projectId: string, options: { viewerId?: string; through?: number } = {}): { through: number } {

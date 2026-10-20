@@ -31,7 +31,7 @@
 
 身份使用真实路径和最近 `.git`/`.jj` 根；同仓库子目录及 symlink 别名共享占用，独立 worktree 分开。普通目录的父子路径也互斥。占用检查、请求绑定和任务预留位于同一个跨进程派发锁内。相同 request_key 的重放先返回原任务，不会因原任务自己占用而失败；故意再执行需要新 key。
 
-取消是记录终止意图，不等于操作系统进程已完全消失。取消/超时任务的进程仍活着时保留占用；历史 RUNNING 记录保守阻止进入，先通过现有任务查询/recovery 回收它。不要为了派发新任务手改 meta 状态、删除 PID 文件或清理仓库。
+终态不等于所有后台子进程已消失。取消/超时任务的进程，或正常结束/失败任务记录的 supervisor 进程组仍活着时保留占用；历史 RUNNING 记录保守阻止进入，先通过现有任务查询/recovery 回收它。不要为了派发新任务手改 meta 状态、删除 PID 文件或清理仓库。
 
 保护仅覆盖**共享同一 runsDir 登记库**的 Hub 实例，不覆盖其他 runsDir、Hub 外进程或一个 Agent 自行启动且脱离其进程组的程序。平台不自动归档/回滚目标仓库；调用者保存补丁时仍需包含其拥有的未跟踪文件，或用下述显式 artifact 留存。
 
@@ -48,7 +48,7 @@ GET task detail / `swarm_status` 的 `activity` 包含：
 
 ## 当前检查点与显式验收
 
-历史 notes 继续 append-only；`latestNote` 只是最近一条笔记，不能代表已验收。`GET /api/projects/:id/context` / `swarm_project_context` 另外返回 `checkpoint` 和 `notesPage: {total,truncated}`。读取不会标记已读。
+历史 notes 继续 append-only；`latestNote` 只是最近一条笔记，不能代表已验收。`GET /api/projects/:id/context` / `swarm_project_context` 另外返回 `checkpoint` 和 `notesPage: {total,truncated}`。`changesSinceVisit.checkpoint` 单独呈现游标之后的新检查点；读取不会标记已读。
 
 `POST /api/projects/:id/checkpoints` / `swarm_project_checkpoint` 写入显式当前状态：
 
@@ -78,7 +78,7 @@ checks 可省略；省略表示没有提供逐项检查，不是“全部通过�
 
 ## 显式证据留存
 
-artifacts 需要绝对路径，realpath 必须在项目目录或 runsDir 内；最多 20 项，每项限普通文件 8 MiB。摘要保存 path/sha256/bytes。`retain=true` 才将指定文件写入 runsDir/project-evidence/<project>/<sha256>，不覆盖已有不同内容。不扫描仓库、不自动拷贝原始 Agent transcript，不读取密钥配置内容来判断登录。
+artifacts 需要绝对路径，realpath 必须在项目目录或 runsDir 内；未配置 cwd 的项目只允许 runsDir，项目目录移除后仍可留存 runsDir 内证据；最多 20 项，每项限普通文件 8 MiB。摘要保存 path/sha256/bytes。`retain=true` 才将指定文件写入 runsDir/project-evidence/<project>/<sha256>，不覆盖已有不同内容。不扫描仓库、不自动拷贝原始 Agent transcript，不读取密钥配置内容来判断登录。
 
 当前 context 检查 `sourceState` 和 `retainedState`：available、changed、missing 或 not-retained。源日志变化不改写历史 hash；原文件删除而 retainedState=available 时，可从 retainedPath 读取当时内容。原文件可能持续写入；应等检查结束后再留存，读取中变化会拒绝归档。
 
@@ -90,6 +90,7 @@ artifacts 需要绝对路径，realpath 必须在项目目录或 runsDir 内；�
 
 ```text
 node scripts/verify.mjs --inventory /projects/reader
+node scripts/verify.mjs --inventory /projects/reader target dist
 node scripts/verify.mjs /projects/reader/verification.json /tmp/reader-checks-new
 npm run verify -- /tmp/agenthub-checks-new
 ```
@@ -108,13 +109,13 @@ manifest v1 示例：
 }
 ```
 
-此例仅说明结构，命令必须按目标仓库真实 CI 校对。CI 作者/调用者负责将 workflow、脚本、feature、独立 workspace、平台条件和 artifact 检查逐项映射。**`--inventory` 发现 package.json、Cargo.toml、.github/workflows 的路径和 hash，不会解析任意 CI 脚本或证明清单已经完整。** 它跳过 node_modules/target/vendor/lib/dist、版本目录和本地 runs/scratch，不展开 symlink 目录。
+此例仅说明结构，命令必须按目标仓库真实 CI 校对。CI 作者/调用者负责将 workflow、脚本、feature、独立 workspace、平台条件和 artifact 检查逐项映射。**`--inventory` 发现 package.json、Cargo.toml、.github/workflows 的路径和 hash，不会解析任意 CI 脚本或证明清单已经完整。** 它默认跳过 node_modules、.git/.jj 和本地 .swarm-runs/.scratch，不展开 symlink 目录；不会按 lib/vendor/target/dist 的名称静默隐藏源工作区。较大的生成目录可用 CLI 的附加路径显式排除，并将同一列表写入 manifest.inventoryExcludes，排除范围会出现在报告中。
 
-将 `--inventory` 的数组填入 manifest.inventory，可检测新增/删除/修改的 workflow 和独立 workspace。额外 scripts 放入 `sources: [{path,sha256}]`；source 路径相对 root。来源在运行前或运行中变化，报告均不再表示本轮矩阵匹配，需要人工核对更新 pins。只填写 sources 而省略 inventory 时，无法检查新发现的独立 workspace；两者都省略时只验证所列命令，不能声称已覆盖 CI。
+将 `--inventory` 的数组填入 manifest.inventory；若使用了附加排除路径，须同时填写 `inventoryExcludes: ["target", "dist"]`。这可检测新增/删除/修改的 workflow 和独立 workspace。额外 scripts 放入 `sources: [{path,sha256}]`；source 路径相对 root。来源在运行前或运行中变化，报告均不再表示本轮矩阵匹配，需要人工核对更新 pins。只填写 sources 而省略 inventory 时，无法检查新发现的独立 workspace；两者都省略时只验证所列命令，不能声称已覆盖 CI。
 
 检查按 argv 直接启动（无 shell 插值），cwd 相对 root，也可显式设为绝对路径，默认每项 15 分钟、最大 1 小时。命令本身仍可以修改仓库，清单应只包含已授权检查；不要运行不可信仓库中的清单。Windows 的 .cmd 工具可用 node 脚本入口替代，原生可执行程序按 argv 调用。
 
-report 目录必须不存在且父目录已存在；不会覆盖旧报告。每项产生日志及 status/exitCode/signal/timedOut。前项失败后仍记录后项；required 未通过（包括平台不匹配 not-run）或来源变化，整体退出 1；SIGINT/SIGTERM 中断退出 130，剩余检查标 not-run。在 POSIX 上终止本检查的进程组；Windows 仅终止直接子进程，复杂子树须由具体工具自身清理，不能据此宣称通用进程树回收。
+report 目录必须不存在且父目录已存在；不会覆盖旧报告。每项产生日志及 status/exitCode/signal/timedOut。前项失败后仍记录后项；required 未通过（包括平台不匹配 not-run）或来源变化，整体退出 1；SIGINT/SIGTERM 中断退出 130，剩余检查标 not-run。在 POSIX 上终止本检查的进程组；leader 虽退出 0 但仍留下进程组子进程时，标 lingeringChildren/failed 并清理，不让后续后台写入冒充稳定证据；Windows 仅终止直接子进程，复杂子树须由具体工具自身清理，不能据此宣称通用进程树回收。
 
 `report.json.requiredChecksPassed` 只是所声明矩阵的机械结果，**不是业务验收**。初始和进行中报告该字段为 false，最终 completedAt 和逐项结果可供核对；将报告及必要日志显式留存到项目检查点。提供的 AgentHub 自身 verification.json 覆盖隔离测试、类型检查和发布构建；本仓库当前没有 .github/workflows，不编造远程 CI 已运行。
 

@@ -70,3 +70,14 @@ test('runsDir evidence remains retainable after removing the project worktree', 
   const record = checkpoints.append('p', { ...input, artifacts: [{ path: file, retain: true }] });
   assert.equal(record.artifacts[0].bytes, 14); assert.equal(readFileSync(record.artifacts[0].retainedPath, 'utf8'), 'durable report');
 });
+
+test('checkpoint changes participate in the project seen cursor independently from notes and tasks', t => {
+  const { hub, checkpoints } = fixture(t);
+  const first = checkpoints.append('p', input);
+  hub.projects.markSeen('p', { through: first.sequence });
+  assert.equal((hub.projects.context('p') as any).changesSinceVisit.checkpoint, null);
+  const next = checkpoints.append('p', { ...input, expectedSequence: first.sequence, revision: 'next' });
+  const context = hub.projects.context('p') as any;
+  assert.equal(context.changesSinceVisit.checkpoint.sequence, next.sequence);
+  assert.deepEqual(context.changesSinceVisit.notes, []); assert.deepEqual(context.changesSinceVisit.tasks, []);
+});
