@@ -1,5 +1,5 @@
 import { parseCodexTranscript } from './transcript-format.ts';
-import { accessSync, constants, existsSync } from 'node:fs';
+import { accessSync, constants, existsSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 import type { WorkerAdapter, AdapterCommandSpec, AdapterCommandResult } from './base.ts';
@@ -26,6 +26,7 @@ function isUsableCliPath(path: string): boolean {
     ? constants.R_OK
     : constants.X_OK;
   try {
+    if (!statSync(path).isFile()) return false;
     accessSync(path, mode);
     return true;
   } catch {

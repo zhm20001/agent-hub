@@ -125,7 +125,7 @@ describe('task lifecycle', () => {
     assert.match(artifacts(id)[2], /cancelled/);
   });
 
-  it('settles spawn errors without interpreting the runner header as child output', async () => {
+  it('refuses a missing executable before spawning or writing a runner header', async () => {
     const savedPath = process.env.PATH;
     let meta: TaskMeta;
     try {
@@ -135,13 +135,14 @@ describe('task lifecycle', () => {
       if (savedPath === undefined) delete process.env.PATH;
       else process.env.PATH = savedPath;
     }
-    await waitFor(() => runner.readTaskMeta(meta.taskId)?.exitCode === -2);
+    await waitFor(() => runner.readTaskMeta(meta.taskId)?.status === 'FAILED');
     assert.equal(runner.readTaskMeta(meta.taskId)?.status, 'FAILED');
-    assert.match(runner.readTaskMeta(meta.taskId)?.error ?? '', /ENOENT/);
+    assert.match(runner.readTaskMeta(meta.taskId)?.error ?? '', /not an executable/);
+    assert.equal(existsSync(join(runner.getTaskDir(meta.taskId), 'raw.log')), false);
     const record = readRunRecord(runner.getTaskDir(meta.taskId));
     assert.equal(record?.observation.producedOutput, false);
     assert.deepEqual(record?.resolution.finalText, { kind: 'empty' });
-    assert.match(artifacts(meta.taskId)[2], /ENOENT/);
+    assert.match(artifacts(meta.taskId)[2], /not an executable/);
   });
 
   it('uses the same lifecycle for a watchdog timeout', async () => {

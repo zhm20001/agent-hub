@@ -40,12 +40,16 @@ export function createApp(hub: Hub = defaultHub) {
   /**
    * POST /api/tasks/dispatch - spawn a new detached task
    */
+  app.post('/api/tasks/preflight', (req, res) => {
+    try { res.json(hub.engine.preflight(req.body ?? {})); } catch (error) { sendError(error, res); }
+  });
+
   app.post('/api/tasks/dispatch', (req: Request, res: Response) => {
     try {
       const { prompt, ticket, label, adapter, mode, cwd, timeout, resumeSessionId,
-        request_key, projectId, parentTaskId, dependsOn, handoff } = req.body ?? {};
+        request_key, projectId, parentTaskId, dependsOn, handoff, workspaceAccess } = req.body ?? {};
       const meta = spawnDetachedTask({ prompt, ticket, label, adapter, mode, cwd, timeout,
-        resumeSessionId, request_key, projectId, parentTaskId, dependsOn, handoff });
+        resumeSessionId, request_key, projectId, parentTaskId, dependsOn, handoff, workspaceAccess });
 
       res.status(201).json(meta);
     } catch (error) { sendError(error, res); }

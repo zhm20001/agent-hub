@@ -13,7 +13,7 @@
  * @module
  */
 
-import { accessSync, constants, existsSync } from 'node:fs';
+import { accessSync, constants, existsSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 /**
@@ -87,11 +87,7 @@ export function resolveProviderConfigEnv(
 
   const inherited = process.env[BUILTIN_PROVIDER_CONFIG_ENV];
   if (inherited !== undefined && inherited.length > 0) {
-    return {
-      status: 'inject',
-      env: { [BUILTIN_PROVIDER_CONFIG_ENV]: inherited },
-      source: 'override',
-    };
+    return resolveProviderConfigEnv(zcodeCliPath, inherited);
   }
 
   const derived = defaultBuiltinProviderConfigPath(zcodeCliPath);
@@ -129,6 +125,7 @@ export class PreconditionUnmetError extends Error {
 function isReadableFile(path: string): boolean {
   if (!existsSync(path)) return false;
   try {
+    if (!statSync(path).isFile()) return false;
     accessSync(path, constants.R_OK);
     return true;
   } catch {

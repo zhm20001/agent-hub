@@ -20,7 +20,9 @@ test('HTTP and agent tools share project context, idempotency and strict input v
   try {
     assert.equal((await post('/api/projects',{id:'p',name:'Project',goal:'Keep enough context to continue',cwd:root})).status,201);
     await tools.get('swarm_project_note').execute({projectId:'p',body:'Next: verify the pending result',author:'lead',request_key:'note'});
-    const input={prompt:'printf "tail😀"',adapter:'bash',projectId:'p',request_key:'same'};
+    const input={prompt:'printf "tail😀"',adapter:'bash',workspaceAccess:'read',projectId:'p',request_key:'same'};
+    assert.equal((await (await post('/api/tasks/preflight', input)).json()).ready, true);
+    assert.equal((await tools.get('swarm_preflight').execute(input)).ready, true);
     const first=await post('/api/tasks/dispatch',input); assert.equal(first.status,201,await first.clone().text());
     const task=await first.json(); assert.equal(task.cwd,root); assert.equal(task.prompt,input.prompt);
     const again=await tools.get('swarm_dispatch').execute(input); assert.equal(again.taskId,task.taskId);
@@ -28,7 +30,7 @@ test('HTTP and agent tools share project context, idempotency and strict input v
     assert.equal((await post('/api/tasks/dispatch',{...input,request_key:'invalid',handoff:true})).status,400);
     assert.equal((await post('/api/tasks/dispatch',{...input,request_key:'invalid'})).status,201);
     assert.equal((await post('/api/tasks/dispatch',{prompt:'echo bad',timeout:'10oops'})).status,400);
-    const refused = await post('/api/tasks/dispatch',{prompt:'echo bad',adapter:'typo'});
+    const refused = await post('/api/tasks/dispatch',{prompt:'echo bad',adapter:'typo',workspaceAccess:'read'});
     assert.equal(refused.status,201); assert.equal((await refused.json()).status,'FAILED');
     assert.equal((await post('/api/tasks/dispatch',{prompt:'echo bad',projectId:'missing'})).status,404);
     await until(()=>hub.queries.getTaskDetail(task.taskId)?.status!=='RUNNING');

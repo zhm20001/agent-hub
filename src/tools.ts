@@ -33,6 +33,7 @@ export function registerSwarmTools(ctx?: DshContext, activeAgentGetter?: () => D
         type: 'string',
         description: 'Permission mode: "edit" (default), "build", "plan", or "yolo".',
       },
+      workspaceAccess: { type: 'string', description: 'Workspace scheduling declaration: write (default) or read. Read is not a filesystem sandbox.' },
       request_key: { type: 'string', description: 'Stable request identity. Retry with identical input to get the original task; changed input conflicts.' },
       projectId: { type: 'string', description: 'Project notebook ID.' },
       parentTaskId: { type: 'string', description: 'Related parent task in the same project.' },
@@ -58,7 +59,7 @@ export function registerSwarmTools(ctx?: DshContext, activeAgentGetter?: () => D
         cwd,
         timeout: args.timeout,
         request_key: args.request_key, projectId: args.projectId, parentTaskId: args.parentTaskId,
-        dependsOn: args.dependsOn, handoff: args.handoff, resumeSessionId: args.resumeSessionId,
+        dependsOn: args.dependsOn, handoff: args.handoff, resumeSessionId: args.resumeSessionId, workspaceAccess: args.workspaceAccess,
       });
 
       return {
@@ -70,6 +71,11 @@ export function registerSwarmTools(ctx?: DshContext, activeAgentGetter?: () => D
         reportPath: join(hub.store.dir(meta.taskId), 'report.md'),
       };
     },
+  });
+
+  ctx.tools.register({ name: 'swarm_preflight', description: 'Inspect launch and workspace readiness without starting an Agent; readiness is not authentication or quota verification.',
+    parameters: { prompt: {type:'string',required:true}, cwd: {type:'string'}, adapter: {type:'string'}, mode: {type:'string'}, projectId: {type:'string'}, workspaceAccess: {type:'string'} },
+    async execute(args: any) { return hub.engine.preflight(args); },
   });
 
   // swarm_kill

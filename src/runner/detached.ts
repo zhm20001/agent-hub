@@ -1,3 +1,5 @@
+import { assertWorkspaceAvailable, type WorkspaceAccess } from './workspace.ts';
+import { inspectLaunch, type LaunchCheck } from './preflight.ts';
 import { PROCESS_LAUNCHER, recordedProcessExit, recordedProcessPid, abandonUnclaimedLaunch } from './process-launcher.ts';
 import { spawn, execSync } from 'node:child_process';
 import { openSync, closeSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
@@ -12,7 +14,6 @@ import type { WorkerAdapter } from '../adapters/base.ts';
 import type { FinalText, PreconditionUnmet, SessionRef, TranscriptRef } from '../adapters/contract.ts';
 import { getAdapter, adapterForSettlement, UnknownAdapterError } from '../adapters/registry.ts';
 export { getAdapter, adapterForSettlement, UnknownAdapterError, KNOWN_ADAPTERS } from '../adapters/registry.ts';
-import { PreconditionUnmetError } from '../adapters/preconditions.ts';
 import {
   RUN_RECORD_FILE,
   fallbackTranslation,
@@ -75,6 +76,7 @@ export interface DispatchOptions {
   label?: string;
   prompt: string;
   cwd?: string;
+  workspaceAccess?: WorkspaceAccess;
   adapter?: string;
   mode?: string;
   disallowedTools?: string[];
@@ -125,6 +127,7 @@ function validateDispatch(options: DispatchOptions): void {
   for (const id of [options.taskId, options.parentTaskId, ...(options.dependsOn ?? [])]) {
     if (id !== undefined && !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(id)) throw new DispatchValidationError('Invalid dispatch task id');
   }
+  if (options.workspaceAccess !== undefined && !['read', 'write'].includes(options.workspaceAccess)) throw new DispatchValidationError('Invalid dispatch workspaceAccess');
   if (options.originalPrompt !== undefined && typeof options.originalPrompt !== 'string') throw new DispatchValidationError('Invalid dispatch originalPrompt');
   if (options.handoff !== undefined && typeof options.handoff !== 'boolean') throw new DispatchValidationError('Invalid dispatch handoff');
 }
@@ -302,9 +305,28 @@ export function createTaskEngine(settings: TaskEngineOptions) {
    */
 
 
+  function preflight(options: DispatchOptions) {
+    validateDispatch(options);
+    const input = { ...options, cwd: resolve(options.cwd ?? dirname(store.runsDir)), adapter: options.adapter === 'shell' ? 'bash' : options.adapter ?? 'zcode', workspaceAccess: options.workspaceAccess ?? 'write' as WorkspaceAccess };
+    const prepared = settings.prepareDispatch?.(input, options) ?? input;
+    validateDispatch(prepared);
+    const checks: LaunchCheck[] = [];
+    try { assertCwdAllowed(prepared.cwd!, resolveTaskRoots(env, dirname(store.runsDir)), { allowTmpDemoPrefix: !taskRootsEnvSet(env) }); checks.push({ name: 'cwd-allowed', ok: true }); }
+    catch (error) { checks.push({ name: 'cwd-allowed', ok: false, reason: (error as Error).message }); }
+    if (checks[0].ok) {
+      try { checks.push(...inspectLaunch(lookupAdapter(input.adapter), { ...prepared, cwd: prepared.cwd! }, env).checks); }
+      catch (error) { if (!(error instanceof UnknownAdapterError)) throw error; checks.push({ name: 'adapter', ok: false, reason: error.message }); }
+      if (checks.every(check => check.ok)) {
+        try { assertWorkspaceAvailable(store, prepared.cwd!, input.workspaceAccess); checks.push({ name: 'workspace', ok: true }); }
+        catch (error) { checks.push({ name: 'workspace', ok: false, reason: (error as Error).message }); }
+      }
+    }
+    return { ready: checks.every(check => check.ok), cwd: prepared.cwd, workspaceAccess: input.workspaceAccess, checks };
+  }
+
   function spawnDetachedTask(options: DispatchOptions): TaskMeta {
     validateDispatch(options);
-    const normalized = { ...options, cwd: resolve(options.cwd ?? dirname(store.runsDir)), adapter: options.adapter === 'shell' ? 'bash' : options.adapter ?? 'zcode', mode: options.mode ?? 'edit', timeout: options.timeout ?? resolveDefaultTimeout(env) };
+    const normalized = { ...options, cwd: resolve(options.cwd ?? dirname(store.runsDir)), adapter: options.adapter === 'shell' ? 'bash' : options.adapter ?? 'zcode', mode: options.mode ?? 'edit', workspaceAccess: options.workspaceAccess ?? 'write', timeout: options.timeout ?? resolveDefaultTimeout(env) };
     const fingerprint = createHash('sha256').update(JSON.stringify(Object.fromEntries(Object.entries(normalized).filter(([, value]) => value !== undefined).sort(([a], [b]) => a.localeCompare(b))))).digest('hex');
     return store.withDispatchLock(() => {
       if (options.request_key) {
@@ -322,6 +344,8 @@ export function createTaskEngine(settings: TaskEngineOptions) {
       validateDispatch(prepared);
       assertCwdAllowed(resolve(prepared.cwd!), resolveTaskRoots(env, dirname(store.runsDir)), { allowTmpDemoPrefix: !taskRootsEnvSet(env) });
       if (store.read(taskId) || existsSync(store.dir(taskId))) throw new TaskIdConflictError(taskId);
+      // Missing/invalid directories retain the existing failed-launch record path.
+      if (existsSync(prepared.cwd!)) assertWorkspaceAvailable(store, prepared.cwd!, prepared.workspaceAccess ?? 'write');
       // Reserve the directory before binding a request key: an existing task
       // must never be adopted by a failed new dispatch, including on retry.
       store.reserve(taskId);
@@ -381,26 +405,13 @@ export function createTaskEngine(settings: TaskEngineOptions) {
       throw err;
     }
 
-    // The adapter declares; the engine checks — every dispatch, never cached.
-    // Only the engine holds the environment and workspace this dispatch will
-    // actually run with.
-    try {
-      adapter.checkPreconditions?.();
-    } catch (err: any) {
-      if (err instanceof PreconditionUnmetError) {
-        return refuseToStart(err.message, [{ name: err.precondition }]);
-      }
-      throw err;
-    }
-
-    const commandSpec = adapter.buildCommand({
-      prompt: options.prompt,
-      cwd: taskCwd,
-      mode: options.mode,
-      disallowedTools: options.disallowedTools,
-      resumeSessionId: options.resumeSessionId,
-      timeout,
-    });
+    const inspected = inspectLaunch(adapter, {
+      prompt: options.prompt, cwd: taskCwd, mode: options.mode,
+      disallowedTools: options.disallowedTools, resumeSessionId: options.resumeSessionId, timeout,
+    }, env);
+    const failure = inspected.checks.find(check => !check.ok);
+    if (failure) return refuseToStart(failure.reason ?? failure.name, [{ name: failure.name }]);
+    const commandSpec = inspected.command!;
 
     const header = `=== Swarm Task ${taskId} [${options.ticket || 'NO-TICKET'}] ===\n`
       + `Adapter: ${adapterName} | Started: ${new Date().toISOString()}\n`
@@ -416,7 +427,7 @@ export function createTaskEngine(settings: TaskEngineOptions) {
       taskId, ...taskContext(options), ticket: options.ticket,
       label: options.label || options.prompt.slice(0, 50),
       prompt: options.prompt, status: 'RUNNING', startTime: now(), timeout,
-      adapter: adapterName, cwd: taskCwd, launchOwnerPid: process.pid,
+      adapter: adapterName, cwd: taskCwd, workspaceAccess: options.workspaceAccess ?? 'write', workspace: assertWorkspaceAvailable(store, taskCwd, options.workspaceAccess ?? 'write'), launchOwnerPid: process.pid,
       ...(options.resumeSessionId ? { sessionId: options.resumeSessionId } : {}),
     };
     store.writeInitial(meta);
@@ -518,7 +529,7 @@ export function createTaskEngine(settings: TaskEngineOptions) {
     atomicWrite(reportPath, report);
   }
 
-  return { store, env, now, getAdapter: lookupAdapter, getTaskDir, ensureRunsDir, spawnDetachedTask, readTaskMeta, updateTaskMeta, settleTask, completeTask, terminateTask, readResolution, generateReport };
+  return { store, env, now, getAdapter: lookupAdapter, getTaskDir, ensureRunsDir, preflight, spawnDetachedTask, readTaskMeta, updateTaskMeta, settleTask, completeTask, terminateTask, readResolution, generateReport };
 }
 export type TaskEngine = ReturnType<typeof createTaskEngine>;
 export const defaultEngine = createTaskEngine({ store: defaultTaskStore });

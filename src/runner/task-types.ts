@@ -20,6 +20,8 @@ export interface TaskMeta {
   timeout: number; // in seconds
   adapter: string;
   cwd: string;
+  workspaceAccess?: 'read' | 'write';
+  workspace?: string;
   exitCode?: number | null;
   error?: string;
   /** One-shot TTL extension already granted by the progress probe. */

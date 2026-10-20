@@ -1,5 +1,5 @@
 import { parseZcodeTranscript } from './transcript-format.ts';
-import { existsSync } from 'node:fs';
+import { accessSync, constants, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { WorkerAdapter, AdapterCommandSpec, AdapterCommandResult, AdapterEnvDelta } from './base.ts';
 import type { AdapterRawOutput, AdapterTranslation, AdapterUsage, FinalText } from './contract.ts';
@@ -18,9 +18,13 @@ export const CLI_PATH_PRECONDITION = 'cli-path';
  * Accepts an explicit path (tests inject fixtures this way) or `ZCODE_CLI_PATH`.
  * Never falls back to `tests/fixtures/fake-zcode.cjs` — missing path fails loud.
  */
+function isCliFile(path: string): boolean {
+  try { if (!statSync(path).isFile()) return false; accessSync(path, /\.c?js$/.test(path) ? constants.R_OK : constants.X_OK); return true; } catch { return false; }
+}
+
 export function resolveZcodeCliPath(explicit?: string): { ok: true; path: string } | { ok: false; reason: string } {
   if (explicit !== undefined && explicit.length > 0) {
-    if (existsSync(explicit)) return { ok: true, path: resolve(explicit) };
+    if (isCliFile(explicit)) return { ok: true, path: resolve(explicit) };
     return {
       ok: false,
       reason: `declared zcode CLI path is not a readable file: ${explicit}`,
@@ -28,7 +32,7 @@ export function resolveZcodeCliPath(explicit?: string): { ok: true; path: string
   }
   const fromEnv = process.env.ZCODE_CLI_PATH;
   if (fromEnv !== undefined && fromEnv.length > 0) {
-    if (existsSync(fromEnv)) return { ok: true, path: resolve(fromEnv) };
+    if (isCliFile(fromEnv)) return { ok: true, path: resolve(fromEnv) };
     return {
       ok: false,
       reason: `ZCODE_CLI_PATH is set but not a readable file: ${fromEnv}`,
@@ -89,6 +93,7 @@ export class ZCodeAdapter implements WorkerAdapter {
     if (this.cliPathError !== null) {
       throw new PreconditionUnmetError(CLI_PATH_PRECONDITION, this.cliPathError);
     }
+    if (!isCliFile(this.cliPath)) throw new PreconditionUnmetError(CLI_PATH_PRECONDITION, `ZCode CLI path is no longer usable: ${this.cliPath}`);
     const resolution = resolveProviderConfigEnv(this.cliPath);
     if (resolution.status === 'blocked') {
       throw new PreconditionUnmetError(PROVIDER_CONFIG_PRECONDITION, resolution.reason);
